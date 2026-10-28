@@ -81,6 +81,45 @@ Do **not** use: 📁 📄 📂 📤 🗁 🗋 🖹 🔍 ▸ ▾ ▪ ◇ ◆ ↑ 
 box-drawing set (─ │ ├ └). To use a wider set, load a font with
 `egui::Context::set_fonts`.
 
+## Packages (.deb / Flatpak)
+
+Both packages are built from the same release binary and ship the launcher
+entry, the 256/512 px icons and AppStream metadata.
+
+### Debian / Ubuntu
+
+```bash
+./scripts/package-deb.sh                 # cargo build --release + package
+sudo apt install ./dist/7rust-zip_0.1.0_amd64.deb
+```
+
+Requirements are derived from the binary's own shared objects
+(`libc6`, `libgcc-s1`, `libstdc++6`); X11/Wayland/GTK/DBus are loaded at
+runtime, hence only `Recommends` entries. Remove with `sudo apt remove 7rust-zip`.
+
+Note that the binary links against the build machine's glibc, so building on an
+older distro lowers the `libc6` floor (currently 2.39).
+
+### Flatpak
+
+```bash
+./scripts/package-flatpak.sh
+flatpak install --user dist/io.github.rustzip.SevenRustZip.flatpak
+flatpak run io.github.rustzip.SevenRustZip
+```
+
+The script uses `packaging/flatpak/io.github.rustzip.SevenRustZip.yml`, which
+builds against `org.freedesktop.Sdk//25.08` with the
+`org.freedesktop.Sdk.Extension.rust-stable` extension — the manifest to submit
+upstream. `flatpak-builder` can only see the *system* installation for
+runtimes/extensions; when the extension is missing there, the script falls back
+to `...local.yml`, which downloads a pinned Rust toolchain as a build source so
+it works with an unprivileged user installation. Install `flatpak-builder`
+itself with `flatpak install --user -y flathub org.flatpak.Builder`.
+
+Both scripts stage outside the source tree, so the checkout may live on a
+filesystem that cannot store Unix permissions (NTFS/exFAT).
+
 ## Install the launcher (optional)
 
 ```bash

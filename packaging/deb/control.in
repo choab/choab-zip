@@ -1,0 +1,21 @@
+Package: 7rust-zip
+Version: @VERSION@
+Section: utils
+Priority: optional
+Architecture: @ARCH@
+Maintainer: @MAINTAINER@
+Installed-Size: @SIZE@
+Depends: @DEPENDS@
+Recommends: xdg-desktop-portal, xdg-desktop-portal-gnome | xdg-desktop-portal-kde | xdg-desktop-portal-backend, libdbus-1-3
+Suggests: file-roller
+Description: Native 7-Zip-style archiver for Linux
+ A two-pane archive manager written in pure Rust: browse your files on the
+ left, browse or create archives on the right.
+ .
+ Features:
+  * Read and write 7z, zip, tar, tar.gz, tar.xz, tar.bz2 and tar.zst
+  * Read RAR archives natively (no unrar binary needed)
+  * Browse archive contents in-app, preview text and hex dumps
+  * Extract everything, or just the selected item
+  * Test archives for integrity, inspect properties
+  * No Wine, no Qt, no external 7z process

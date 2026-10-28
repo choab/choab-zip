@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.rustzip.SevenRustZip</id>
+  <name>7rust-zip</name>
+  <summary>Native 7-Zip-style archiver for Linux</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <description>
+    <p>
+      A two-pane archive manager written in pure Rust. Browse your files on the
+      left and the contents of an archive on the right, without Wine, Qt or an
+      external 7z process.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Read and write 7z, zip, tar, tar.gz, tar.xz, tar.bz2 and tar.zst</li>
+      <li>Read RAR archives natively</li>
+      <li>Browse archive contents in-app, preview text files and hex dumps</li>
+      <li>Extract everything or only the selected item</li>
+      <li>Test archive integrity and inspect properties</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">7rust-zip.desktop</launchable>
+
+
+
+  <categories>
+    <category>Utility</category>
+    <category>Archiving</category>
+    <category>FileTools</category>
+  </categories>
+
+  <keywords>
+    <keyword>archive</keyword>
+    <keyword>7z</keyword>
+    <keyword>zip</keyword>
+    <keyword>tar</keyword>
+    <keyword>rar</keyword>
+    <keyword>compress</keyword>
+    <keyword>extract</keyword>
+  </keywords>
+
+  <developer id="io.github.rustzip">
+    <name>7rust-zip contributors</name>
+  </developer>
+
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="0.1.0" date="2026-10-28">
+      <description>
+        <p>First packaged release: two-pane browser, 7z/zip/tar read+write,
+        RAR reading, in-app viewer, 2026-style icon set.</p>
+      </description>
+    </release>
+  </releases>
+</component>
