@@ -19,6 +19,9 @@ pub enum Format {
     Gz,
     Xz,
     Bz2,
+    Rar,
+    /// Recognised by magic bytes but no reader is available.
+    Unknown,
 }
 
 impl Format {
@@ -34,9 +37,12 @@ impl Format {
             Format::Gz => "gz",
             Format::Xz => "xz",
             Format::Bz2 => "bz2",
+            Format::Rar => "rar",
+            Format::Unknown => "unknown",
         }
     }
 
+    /// RAR is extract/list only — we never create it.
     #[allow(dead_code)] // part of the public engine API
     pub fn can_write(self) -> bool {
         matches!(
@@ -61,6 +67,10 @@ impl Format {
             ("gz", Format::Gz),
             ("xz", Format::Xz),
             ("bz2", Format::Bz2),
+            ("rar", Format::Rar),
+            // Multi-volume RAR parts are all openable as the archive itself.
+            ("r00", Format::Rar),
+            ("r01", Format::Rar),
         ]
     }
 }
@@ -83,6 +93,10 @@ pub fn detect(path: &Path) -> Format {
             if &head[..6] == b"7z\xBC\xAF\x27\x1C" {
                 return Format::SevenZ;
             }
+            // RAR 1.5-4.x and RAR 5.x
+            if &head[..7] == b"Rar!\x1A\x07\x00" || &head[..8] == b"Rar!\x1A\x07\x01\x00" {
+                return Format::Rar;
+            }
             if &head[..4] == b"PK\x03\x04" || &head[..4] == b"PK\x05\x06" {
                 return Format::Zip;
             }
@@ -98,9 +112,21 @@ pub fn detect(path: &Path) -> Format {
             if &head[..4] == [0x28, 0xB5, 0x2F, 0xFD] {
                 return Format::TarZst;
             }
+            // Uncompressed tar: "ustar" sits at offset 257, too far for `head`.
+            if let Ok(mut f2) = File::open(path) {
+                use std::io::Seek;
+                if f2.seek(std::io::SeekFrom::Start(257)).is_ok() {
+                    let mut magic = [0u8; 5];
+                    if f2.read_exact(&mut magic).is_ok() && &magic == b"ustar" {
+                        return Format::Tar;
+                    }
+                }
+            }
         }
     }
-    Format::SevenZ
+    // Never guess: an unrecognised file is reported as unknown rather than
+    // being handed to the 7z reader, which produced a confusing BadSignature.
+    Format::Unknown
 }
 
 /// One row in the archive listing.
@@ -152,8 +178,57 @@ pub fn list(path: &Path) -> Result<Vec<Entry>> {
     match fmt {
         Format::SevenZ => list_7z(path),
         Format::Zip => list_zip(path),
+        Format::Rar => list_rar(path),
+        Format::Unknown => Err(Error::Other(
+            "unrecognised archive format".to_string(),
+        )),
         _ => list_tar(path),
     }
+}
+
+/// RAR is handled by the vendored unRAR C++ code (via the `unrar` crate).
+/// We can list and extract it, but never create it.
+fn list_rar(path: &Path) -> Result<Vec<Entry>> {
+    let listing = unrar::Archive::new(path)
+        .open_for_listing()
+        .map_err(|e| Error::Other(format!("rar: {e}")))?;
+
+    let mut out = Vec::new();
+    for item in listing {
+        let h = item.map_err(|e| Error::Other(format!("rar: {e}")))?;
+        out.push(Entry {
+            path: h.filename.to_string_lossy().replace('\\', "/"),
+            size: h.unpacked_size,
+            // RAR stores pack sizes per file, but the crate does not expose
+            // them in listing mode; report 0 rather than a guess.
+            packed: 0,
+            is_dir: h.is_directory(),
+            modified: Some(dos_time(h.file_time)),
+            crc: Some(h.file_crc),
+            method: Some("RAR".to_string()),
+        });
+    }
+    Ok(out)
+}
+
+/// RAR stores MS-DOS timestamps. Convert to the same textual form the other
+/// formats use, so sorting is consistent across formats.
+fn dos_time(time: u32) -> String {
+    if time == 0 {
+        return String::new();
+    }
+    let date = time >> 16;
+    let tm = time & 0xFFFF;
+    let (y, mo, d) = (
+        ((date >> 9) & 0x7F) + 1980,
+        (date >> 5) & 0x0F,
+        date & 0x1F,
+    );
+    let (h, mi) = ((tm >> 11) & 0x1F, (tm >> 5) & 0x3F);
+    if mo == 0 || d == 0 {
+        return String::new();
+    }
+    format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}")
 }
 
 fn list_7z(path: &Path) -> Result<Vec<Entry>> {
@@ -325,6 +400,10 @@ pub fn extract(archive: &Path, dest: &Path) -> Result<usize> {
         Format::Gz => extract_single(archive, dest, "gz"),
         Format::Xz => extract_single(archive, dest, "xz"),
         Format::Bz2 => extract_single(archive, dest, "bz2"),
+        Format::Rar => extract_rar(archive, dest),
+        Format::Unknown => Err(Error::Other(
+            "unrecognised archive format".to_string(),
+        )),
         _ => extract_tar(archive, dest),
     }
 }
@@ -422,6 +501,13 @@ pub fn create(fmt: Format, sources: &[PathBuf], target: &Path) -> Result<()> {
             std::fs::create_dir_all(parent)?;
         }
     }
+    // Fail loudly instead of writing a tar with a misleading extension.
+    if !fmt.can_write() {
+        return Err(Error::Other(format!(
+            "cannot create {} archives (extract/list only)",
+            fmt.label()
+        )));
+    }
     match fmt {
         Format::SevenZ => {
             let w = sevenz_rust2::ArchiveWriter::create(target)
@@ -434,7 +520,15 @@ pub fn create(fmt: Format, sources: &[PathBuf], target: &Path) -> Result<()> {
             Ok(())
         }
         Format::Zip => create_zip(sources, target),
-        _ => create_tar(fmt, sources, target),
+        Format::Tar | Format::TarGz | Format::TarXz | Format::TarBz2 | Format::TarZst => {
+            create_tar(fmt, sources, target)
+        }
+        Format::Rar | Format::Unknown | Format::Gz | Format::Xz | Format::Bz2 => {
+            Err(Error::Other(format!(
+                "cannot create {} archives",
+                fmt.label()
+            )))
+        }
     }
 }
 
@@ -550,8 +644,65 @@ pub fn read_entry(archive: &Path, entry_path: &str) -> Result<Vec<u8>> {
     match detect(archive) {
         Format::SevenZ => read_entry_7z(archive, entry_path),
         Format::Zip => read_entry_zip(archive, entry_path),
+        Format::Rar => read_entry_rar(archive, entry_path),
+        Format::Unknown => Err(Error::Other(
+            "unrecognised archive format".to_string(),
+        )),
         _ => read_entry_tar(archive, entry_path),
     }
+}
+
+fn extract_rar(archive: &Path, dest: &Path) -> Result<usize> {
+    let mut count = 0usize;
+    let open = unrar::Archive::new(archive)
+        .open_for_processing()
+        .map_err(|e| Error::Other(format!("rar: {e}")))?;
+    let mut cursor = open;
+    loop {
+        match cursor.read_header() {
+            Ok(Some(header)) => {
+                let is_dir = header.entry().is_directory();
+                // `extract_with_base` extracts byte-identically into a
+                // DIRECTORY; `extract_to` would write to `dest` as a filename.
+                let next = header
+                    .extract_with_base(dest)
+                    .map_err(|e| Error::Other(format!("rar: {e}")))?;
+                if !is_dir {
+                    count += 1;
+                }
+                cursor = next;
+            }
+            Ok(None) => break,
+            Err(e) => return Err(Error::Other(format!("rar: {e}"))),
+        }
+    }
+    Ok(count)
+}
+
+fn read_entry_rar(archive: &Path, want: &str) -> Result<Vec<u8>> {
+    let open = unrar::Archive::new(archive)
+        .open_for_processing()
+        .map_err(|e| Error::Other(format!("rar: {e}")))?;
+    let mut cursor = open;
+    loop {
+        match cursor.read_header() {
+            Ok(Some(header)) => {
+                let name = header.entry().filename.to_string_lossy().replace('\\', "/");
+                if name == want && !header.entry().is_directory() {
+                    let (data, _rest) = header
+                        .read()
+                        .map_err(|e| Error::Other(format!("rar: {e}")))?;
+                    return Ok(data);
+                }
+                cursor = header
+                    .skip()
+                    .map_err(|e| Error::Other(format!("rar: {e}")))?;
+            }
+            Ok(None) => break,
+            Err(e) => return Err(Error::Other(format!("rar: {e}"))),
+        }
+    }
+    Err(Error::Other(format!("entry not found: {want}")))
 }
 
 fn read_entry_7z(archive: &Path, want: &str) -> Result<Vec<u8>> {
