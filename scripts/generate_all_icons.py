@@ -1699,10 +1699,13 @@ def generate_all():
     save_icon(surf, f"{assets_icons}/window_restore.png", 64)
 
     # 15. Flagship App Icon
-    print("  -> icon.png (256x256 and 512x512)")
+    print("  -> icon.png (256x256 and 512x512, plus 64px UI copy)")
     surf = render_app_icon(512)
     save_icon(surf, f"{assets_root}/icon.png", 256)
     save_icon(surf, f"{assets_root}/icon512.png", 512)
+    # Small raster for the in-app titlebar: sampling a 256px texture down to
+    # ~20px on the GPU aliases badly, so ship a pre-downsampled copy.
+    save_icon(surf, f"{assets_root}/icon64.png", 64)
 
     print("All icons successfully generated!")
 
