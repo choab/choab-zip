@@ -5,11 +5,13 @@
 //! launcher: archives can be browsed and files previewed in-app.
 
 mod engine;
+mod icons;
 
 use eframe::egui;
 use engine::{human, Format};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Arc;
 
 /// Upper bound on what the built-in viewer will load, to stay responsive.
 const VIEW_LIMIT: u64 = 8 * 1024 * 1024;
@@ -58,6 +60,8 @@ struct Row {
 }
 
 struct SevenRustZip {
+    icons: Arc<icons::Icons>,
+
     cwd: PathBuf,
     dirs: Vec<DirRow>,
     dir_sel: Option<usize>,
@@ -81,6 +85,14 @@ struct SevenRustZip {
     create_name: String,
     create_fmt: Format,
     show_create: bool,
+
+    /// Properties / Info dialog state
+    show_info: bool,
+    info_title: String,
+    info_lines: Vec<(String, String)>,
+
+    /// Delete confirmation dialog state
+    delete_target: Option<(PathBuf, bool)>,
 
     /// Path inside the archive being previewed (None = viewer closed).
     preview: Option<Preview>,
@@ -107,6 +119,7 @@ impl SevenRustZip {
             style.visuals = light_visuals();
         });
 
+        let icons = icons::Icons::new(&cc.egui_ctx);
         let (tx, rx) = channel();
         let mut cwd = std::env::var("HOME")
             .map(PathBuf::from)
@@ -130,6 +143,7 @@ impl SevenRustZip {
         }
 
         let mut me = Self {
+            icons,
             cwd,
             dirs: Vec::new(),
             dir_sel: None,
@@ -148,6 +162,10 @@ impl SevenRustZip {
             create_name: String::new(),
             create_fmt: Format::SevenZ,
             show_create: false,
+            show_info: false,
+            info_title: String::new(),
+            info_lines: Vec::new(),
+            delete_target: None,
             preview: None,
             focus: Pane::Files,
             typeahead: String::new(),
@@ -203,8 +221,6 @@ impl SevenRustZip {
     fn sort_dirs(&mut self) {
         let (col, asc) = (self.sort_col, self.ascending);
         self.dirs.sort_by(|a, b| {
-            // 7-Zip: folders first in BOTH directions (PanelSort.cpp does the
-            // dir check before inverting for ascending/descending).
             if a.is_dir != b.is_dir {
                 return if a.is_dir {
                     std::cmp::Ordering::Less
@@ -252,7 +268,6 @@ impl SevenRustZip {
         if let Some(p) = self.cwd.parent() {
             let old = self.cwd.clone();
             self.enter_dir(p.to_path_buf());
-            // Keep the folder we came from selected, as explorers do.
             if let Some(name) = old.file_name() {
                 let n = name.to_string_lossy();
                 self.dir_sel = self.dirs.iter().position(|r| r.name == n);
@@ -264,7 +279,6 @@ impl SevenRustZip {
 
     fn open_archive(&mut self, path: PathBuf) {
         if !looks_like_archive(&path) {
-            // Never hand off to another program: show a preview instead.
             self.start_preview_file(&path);
             return;
         }
@@ -300,7 +314,6 @@ impl SevenRustZip {
         let f = self.filter.to_lowercase();
         let prefix = self.inner.clone();
 
-        // Collect immediate children of `inner`.
         let mut rows: Vec<Row> = Vec::new();
         for e in self.entries.iter() {
             let Some(rest) = e.path.strip_prefix(&prefix) else {
@@ -316,7 +329,6 @@ impl SevenRustZip {
             if !f.is_empty() && !name.to_lowercase().contains(&f) {
                 continue;
             }
-            // Fold nested paths into one row per immediate child.
             if let Some(existing) = rows.iter_mut().find(|r| r.name == name) {
                 existing.size += if is_dir { 0 } else { e.size };
                 continue;
@@ -330,7 +342,6 @@ impl SevenRustZip {
             });
         }
 
-        // Sort: folders first in both directions (7-Zip semantics).
         let (col, asc) = (self.sort_col, self.ascending);
         rows.sort_by(|a, b| {
             if a.is_dir != b.is_dir {
@@ -562,7 +573,6 @@ impl SevenRustZip {
                 }
                 Msg::Preview(r, entry_path) => {
                     if let Some(p) = &mut self.preview {
-                        // Ignore stale results if the user moved on.
                         let still = entry_path
                             .rsplit('/')
                             .next()
@@ -693,7 +703,6 @@ impl SevenRustZip {
         }
     }
 
-    /// Windows-style type-to-find: jump to the first item with this prefix.
     fn typeahead(&mut self, ui: &egui::Ui, names: &[String]) {
         let events: Vec<egui::Event> = ui.input(|i| i.events.clone());
         let mut changed = false;
@@ -709,7 +718,6 @@ impl SevenRustZip {
                 }
             }
         }
-        // Reset the buffer after a short idle, like Windows.
         if let Some(t) = self.typeahead_at {
             if t.elapsed().as_millis() > 900 {
                 self.typeahead.clear();
@@ -747,7 +755,6 @@ fn looks_like_archive(path: &Path) -> bool {
     if EXTS.iter().any(|e| name.ends_with(e)) {
         return true;
     }
-    // Fall back to magic bytes for extensionless files.
     use std::io::Read;
     let Ok(mut f) = std::fs::File::open(path) else {
         return false;
@@ -773,18 +780,18 @@ fn cmp_names(a: &str, b: &str) -> std::cmp::Ordering {
 
 fn light_visuals() -> egui::Visuals {
     let mut v = egui::Visuals::light();
-    v.panel_fill = egui::Color32::from_rgb(243, 243, 243);
+    v.panel_fill = egui::Color32::from_rgb(240, 240, 240);
     v.window_fill = egui::Color32::from_rgb(248, 248, 248);
     v.extreme_bg_color = egui::Color32::WHITE;
     v.faint_bg_color = egui::Color32::from_rgb(250, 250, 250);
-    v.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(243, 243, 243);
-    v.widgets.inactive.bg_fill = egui::Color32::from_rgb(227, 227, 227);
-    v.widgets.inactive.weak_bg_fill = egui::Color32::from_rgb(227, 227, 227);
+    v.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(240, 240, 240);
+    v.widgets.inactive.bg_fill = egui::Color32::from_rgb(232, 232, 232);
+    v.widgets.inactive.weak_bg_fill = egui::Color32::from_rgb(232, 232, 232);
     v.widgets.hovered.bg_fill = egui::Color32::from_rgb(204, 226, 247);
     v.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(204, 226, 247);
     v.widgets.active.bg_fill = egui::Color32::from_rgb(0, 120, 215);
-    v.selection.bg_fill = egui::Color32::from_rgb(0, 120, 215);
-    v.selection.stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
+    v.selection.bg_fill = egui::Color32::from_rgb(204, 226, 247);
+    v.selection.stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(0, 120, 215));
     v.override_text_color = Some(egui::Color32::from_rgb(24, 24, 24));
     v
 }
@@ -802,7 +809,6 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
-/// Render a byte blob as text if it plausibly is text.
 fn as_text(bytes: &[u8]) -> Option<String> {
     let n = bytes.len().min(RENDER_LIMIT);
     let slice = &bytes[..n];
@@ -853,21 +859,35 @@ fn hex_dump(bytes: &[u8]) -> String {
 
 impl SevenRustZip {
     fn ui_toolbar(&mut self, ui: &mut egui::Ui) {
+        let icons = Arc::clone(&self.icons);
+
         ui.horizontal(|ui| {
-            if ui.button("Open").clicked() {
-                if let Some(p) = rfd::FileDialog::new()
-                    .set_directory(&self.cwd)
-                    .add_filter(
-                        "Archives",
-                        &["7z", "zip", "tar", "gz", "tgz", "xz", "txz", "bz2", "zst", "rar"],
-                    )
-                    .pick_file()
-                {
-                    self.open_archive(p);
-                }
-            }
+            // 7-Zip Add Button
             if ui
-                .add_enabled(self.archive.is_some(), egui::Button::new("Extract"))
+                .add(egui::Button::image_and_text(
+                    egui::Image::new(&icons.add).fit_to_exact_size(egui::vec2(22.0, 22.0)),
+                    "Add",
+                ))
+                .clicked()
+            {
+                self.show_create = true;
+                self.create_name = "archive.7z".into();
+                self.create_sources = self
+                    .dir_sel
+                    .and_then(|i| self.dirs.get(i))
+                    .map(|r| vec![self.cwd.join(&r.name)])
+                    .unwrap_or_default();
+            }
+
+            // 7-Zip Extract Button
+            if ui
+                .add_enabled(
+                    self.archive.is_some(),
+                    egui::Button::image_and_text(
+                        egui::Image::new(&icons.extract).fit_to_exact_size(egui::vec2(22.0, 22.0)),
+                        "Extract",
+                    ),
+                )
                 .clicked()
             {
                 if let Some(d) = rfd::FileDialog::new()
@@ -877,40 +897,145 @@ impl SevenRustZip {
                     self.extract_to(d);
                 }
             }
+
+            // 7-Zip Test Button
             if ui
-                .add_enabled(self.archive.is_some(), egui::Button::new("Test"))
+                .add_enabled(
+                    self.archive.is_some(),
+                    egui::Button::image_and_text(
+                        egui::Image::new(&icons.test).fit_to_exact_size(egui::vec2(22.0, 22.0)),
+                        "Test",
+                    ),
+                )
                 .clicked()
             {
                 self.run_verify();
             }
-            if ui.button("Add").clicked() {
-                self.show_create = true;
-                self.create_name = "archive.7z".into();
-                self.create_sources = self
-                    .dir_sel
-                    .and_then(|i| self.dirs.get(i))
-                    .map(|r| vec![self.cwd.join(&r.name)])
-                    .unwrap_or_default();
+
+            // 7-Zip Copy Button
+            if ui
+                .add_enabled(
+                    self.dir_sel.is_some(),
+                    egui::Button::image_and_text(
+                        egui::Image::new(&icons.copy).fit_to_exact_size(egui::vec2(22.0, 22.0)),
+                        "Copy",
+                    ),
+                )
+                .clicked()
+            {
+                if let Some(idx) = self.dir_sel {
+                    if let Some(r) = self.dirs.get(idx) {
+                        let src = self.cwd.join(&r.name);
+                        if let Some(dest_dir) = rfd::FileDialog::new().set_directory(&self.cwd).pick_folder() {
+                            let dest = dest_dir.join(&r.name);
+                            if let Err(e) = std::fs::copy(&src, &dest) {
+                                self.status = format!("Copy failed: {e}");
+                            } else {
+                                self.status = format!("Copied to {}", dest.display());
+                                self.refresh_dir();
+                            }
+                        }
+                    }
+                }
             }
+
+            // 7-Zip Move Button
+            if ui
+                .add_enabled(
+                    self.dir_sel.is_some(),
+                    egui::Button::image_and_text(
+                        egui::Image::new(&icons.move_item).fit_to_exact_size(egui::vec2(22.0, 22.0)),
+                        "Move",
+                    ),
+                )
+                .clicked()
+            {
+                if let Some(idx) = self.dir_sel {
+                    if let Some(r) = self.dirs.get(idx) {
+                        let src = self.cwd.join(&r.name);
+                        if let Some(dest_dir) = rfd::FileDialog::new().set_directory(&self.cwd).pick_folder() {
+                            let dest = dest_dir.join(&r.name);
+                            if let Err(e) = std::fs::rename(&src, &dest) {
+                                self.status = format!("Move failed: {e}");
+                            } else {
+                                self.status = format!("Moved to {}", dest.display());
+                                self.refresh_dir();
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 7-Zip Delete Button
+            if ui
+                .add_enabled(
+                    self.dir_sel.is_some(),
+                    egui::Button::image_and_text(
+                        egui::Image::new(&icons.delete).fit_to_exact_size(egui::vec2(22.0, 22.0)),
+                        "Delete",
+                    ),
+                )
+                .clicked()
+            {
+                if let Some(idx) = self.dir_sel {
+                    if let Some(r) = self.dirs.get(idx) {
+                        self.delete_target = Some((self.cwd.join(&r.name), r.is_dir));
+                    }
+                }
+            }
+
+            // 7-Zip Info / Properties Button
+            if ui
+                .add_enabled(
+                    self.dir_sel.is_some() || self.archive.is_some(),
+                    egui::Button::image_and_text(
+                        egui::Image::new(&icons.info).fit_to_exact_size(egui::vec2(22.0, 22.0)),
+                        "Info",
+                    ),
+                )
+                .clicked()
+            {
+                self.show_properties();
+            }
+
             ui.separator();
-            if ui.button("Up").clicked() {
+
+            // Up Button
+            if ui
+                .add(egui::Button::image_and_text(
+                    egui::Image::new(&icons.up).fit_to_exact_size(egui::vec2(18.0, 18.0)),
+                    "Up",
+                ))
+                .clicked()
+            {
                 match self.focus {
                     Pane::Files => self.go_up(),
                     Pane::Archive => self.archive_go_up(),
                 }
             }
-            if ui.button("Refresh").clicked() {
+
+            // Refresh Button
+            if ui
+                .add(egui::Button::image_and_text(
+                    egui::Image::new(&icons.refresh).fit_to_exact_size(egui::vec2(18.0, 18.0)),
+                    "Refresh",
+                ))
+                .clicked()
+            {
                 self.refresh_dir();
                 if let Some(a) = self.archive.clone() {
                     self.open_archive(a);
                 }
             }
+
             ui.separator();
-            ui.label("Find:");
+
+            // Filter search box
+            ui.label("Filter:");
             let resp = ui.add(
                 egui::TextEdit::singleline(&mut self.filter)
-                    .desired_width(160.0)
-                    .hint_text("name"),
+                    .desired_width(140.0)
+                    .hint_text("Search name"),
             );
             if resp.changed() {
                 self.arc_sel = None;
@@ -922,18 +1047,82 @@ impl SevenRustZip {
         });
     }
 
+    fn show_properties(&mut self) {
+        self.info_lines.clear();
+        if self.focus == Pane::Archive || self.dir_sel.is_none() {
+            if let Some(arc) = &self.archive {
+                self.info_title = arc.file_name().and_then(|s| s.to_str()).unwrap_or("Archive").into();
+                let fmt = engine::detect(arc);
+                let total_size: u64 = self.entries.iter().filter(|e| !e.is_dir).map(|e| e.size).sum();
+                let count_files = self.entries.iter().filter(|e| !e.is_dir).count();
+                let count_dirs = self.entries.iter().filter(|e| e.is_dir).count();
+                self.info_lines.push(("Path".into(), arc.display().to_string()));
+                self.info_lines.push(("Type".into(), fmt.label().to_uppercase()));
+                self.info_lines.push(("Physical Size".into(), human(engine::container_size(arc))));
+                self.info_lines.push(("Unpacked Size".into(), human(total_size)));
+                self.info_lines.push(("Files".into(), count_files.to_string()));
+                self.info_lines.push(("Folders".into(), count_dirs.to_string()));
+                self.show_info = true;
+                return;
+            }
+        }
+
+        if let Some(idx) = self.dir_sel {
+            if let Some(r) = self.dirs.get(idx) {
+                self.info_title = r.name.clone();
+                let p = self.cwd.join(&r.name);
+                self.info_lines.push(("Path".into(), p.display().to_string()));
+                self.info_lines.push(("Type".into(), if r.is_dir { "Directory".into() } else if r.is_archive { "Archive".into() } else { "File".into() }));
+                if !r.is_dir {
+                    self.info_lines.push(("Size".into(), format!("{} ({} bytes)", human(r.size), r.size)));
+                }
+                self.info_lines.push(("Modified".into(), r.modified.clone()));
+                self.show_info = true;
+            }
+        }
+    }
+
     fn ui_files(&mut self, ui: &mut egui::Ui) {
+        let icons = Arc::clone(&self.icons);
+
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Folder").strong());
+            ui.add(egui::Image::new(&icons.folder).fit_to_exact_size(egui::vec2(16.0, 16.0)));
+            ui.label(egui::RichText::new("Folder:").strong());
             ui.label(
                 egui::RichText::new(self.cwd.display().to_string())
                     .small()
-                    .color(egui::Color32::from_gray(90)),
+                    .color(egui::Color32::from_gray(80)),
             );
         });
         ui.separator();
 
-        egui::ScrollArea::vertical()
+        // Column Sort Header
+        ui.horizontal(|ui| {
+            let mut clicked = None;
+            for (label, col) in [
+                ("Name", SortCol::Name),
+                ("Size", SortCol::Size),
+                ("Modified", SortCol::Modified),
+            ] {
+                let marker = if self.sort_col == col {
+                    if self.ascending { " ▲" } else { " ▼" }
+                } else {
+                    ""
+                };
+                if ui
+                    .add(egui::Button::new(egui::RichText::new(format!("{label}{marker}")).strong().small()).frame(false))
+                    .clicked()
+                {
+                    clicked = Some(col);
+                }
+            }
+            if let Some(c) = clicked {
+                self.toggle_sort(c);
+            }
+        });
+        ui.separator();
+
+        egui::ScrollArea::both()
             .id_salt("files_scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -941,61 +1130,65 @@ impl SevenRustZip {
                 let mut dbl = None;
                 let mut go_parent = false;
 
-                // 7-Zip pins a ".." row at the top of every listing.
-                if self.cwd.parent().is_some() {
-                    let r = ui.add(
-                        egui::Button::new(
-                            egui::RichText::new("..").monospace().color(
-                                egui::Color32::from_rgb(150, 90, 0),
-                            ),
-                        )
-                        .frame(false)
-                        .min_size(egui::vec2(ui.available_width(), 18.0)),
-                    );
-                    if r.double_clicked() || r.clicked() && false {
-                        go_parent = true;
-                    }
-                }
+                egui::Grid::new("files_grid")
+                    .num_columns(3)
+                    .spacing([12.0, 3.0])
+                    .striped(true)
+                    .show(ui, |ui| {
+                        // 7-Zip pins a ".." row at the top of every listing.
+                        if self.cwd.parent().is_some() {
+                            let resp = ui.add(
+                                egui::Button::image_and_text(
+                                    egui::Image::new(&icons.folder_up).fit_to_exact_size(egui::vec2(16.0, 16.0)),
+                                    egui::RichText::new("..").strong(),
+                                )
+                                .frame(false)
+                            );
+                            if resp.double_clicked() {
+                                go_parent = true;
+                            }
+                            ui.label("");
+                            ui.label("");
+                            ui.end_row();
+                        }
 
-                for (i, row) in self.dirs.iter().enumerate() {
-                    let sel = self.dir_sel == Some(i);
-                    let (mark, color) = if row.is_dir {
-                        ("[D]", egui::Color32::from_rgb(140, 90, 0))
-                    } else if row.is_archive {
-                        ("[A]", egui::Color32::from_rgb(0, 110, 60))
-                    } else {
-                        ("   ", egui::Color32::from_gray(60))
-                    };
-                    let size = if row.is_dir {
-                        format!("{:>9}", "")
-                    } else {
-                        format!("{:>9}", human(row.size))
-                    };
-                    let text = format!(
-                        "{mark} {:<34} {size}  {}",
-                        truncate(&row.name, 34),
-                        row.modified
-                    );
-                    let resp = ui.add(
-                        egui::Button::new(
-                            egui::RichText::new(text).monospace().color(color),
-                        )
-                        .frame(false)
-                        .fill(if sel {
-                            egui::Color32::from_rgb(204, 226, 247)
-                        } else {
-                            egui::Color32::TRANSPARENT
-                        })
-                        .min_size(egui::vec2(ui.available_width(), 18.0)),
-                    );
-                    if resp.clicked() {
-                        clicked = Some(i);
-                        self.focus = Pane::Files;
-                    }
-                    if resp.double_clicked() {
-                        dbl = Some(i);
-                    }
-                }
+                        for (i, row) in self.dirs.iter().enumerate() {
+                            let sel = self.dir_sel == Some(i);
+                            let icon = if row.is_dir {
+                                &icons.folder
+                            } else if row.is_archive {
+                                &icons.archive
+                            } else {
+                                &icons.file
+                            };
+
+                            let resp = ui.add(
+                                egui::Button::image_and_text(
+                                    egui::Image::new(icon).fit_to_exact_size(egui::vec2(16.0, 16.0)),
+                                    &row.name,
+                                )
+                                .selected(sel)
+                                .frame(false)
+                            );
+
+                            if resp.clicked() {
+                                clicked = Some(i);
+                                self.focus = Pane::Files;
+                            }
+                            if resp.double_clicked() {
+                                dbl = Some(i);
+                            }
+
+                            let size_text = if row.is_dir {
+                                String::new()
+                            } else {
+                                human(row.size)
+                            };
+                            ui.label(egui::RichText::new(size_text).monospace());
+                            ui.label(egui::RichText::new(&row.modified).small());
+                            ui.end_row();
+                        }
+                    });
 
                 if let Some(i) = clicked {
                     self.dir_sel = Some(i);
@@ -1017,12 +1210,14 @@ impl SevenRustZip {
     }
 
     fn ui_archive(&mut self, ui: &mut egui::Ui) {
+        let icons = Arc::clone(&self.icons);
+
         let Some(arc) = self.archive.clone() else {
             ui.centered_and_justified(|ui| {
                 ui.label(
                     egui::RichText::new(
-                        "Double-click an archive to open it.\n\
-                         Archives open here; nothing is handed to another app.",
+                        "Double-click an archive on the left to open it.\n\
+                         Everything opens natively in-app.",
                     )
                     .size(14.0)
                     .color(egui::Color32::from_gray(120)),
@@ -1033,7 +1228,8 @@ impl SevenRustZip {
 
         let fmt = engine::detect(&arc);
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Archive").strong());
+            ui.add(egui::Image::new(&icons.archive).fit_to_exact_size(egui::vec2(16.0, 16.0)));
+            ui.label(egui::RichText::new("Archive:").strong());
             ui.label(
                 egui::RichText::new(
                     arc.file_name()
@@ -1065,7 +1261,7 @@ impl SevenRustZip {
 
         let rows = self.visible_rows();
 
-        // Column headers are buttons, like 7-Zip's list view.
+        // Column Sort Header
         ui.horizontal(|ui| {
             let mut clicked = None;
             for (label, col) in [
@@ -1075,21 +1271,12 @@ impl SevenRustZip {
                 ("Modified", SortCol::Modified),
             ] {
                 let marker = if self.sort_col == col {
-                    if self.ascending {
-                        " +"
-                    } else {
-                        " -"
-                    }
+                    if self.ascending { " ▲" } else { " ▼" }
                 } else {
                     ""
                 };
                 if ui
-                    .add(
-                        egui::Button::new(
-                            egui::RichText::new(format!("{label}{marker}")).strong().small(),
-                        )
-                        .frame(false),
-                    )
+                    .add(egui::Button::new(egui::RichText::new(format!("{label}{marker}")).strong().small()).frame(false))
                     .clicked()
                 {
                     clicked = Some(col);
@@ -1117,61 +1304,62 @@ impl SevenRustZip {
                 let mut dbl = None;
                 let mut go_parent = false;
 
-                if !self.inner.is_empty() {
-                    let r = ui.add(
-                        egui::Button::new(
-                            egui::RichText::new("..")
-                                .monospace()
-                                .color(egui::Color32::from_rgb(150, 90, 0)),
-                        )
-                        .frame(false)
-                        .min_size(egui::vec2(ui.available_width(), 18.0)),
-                    );
-                    if r.double_clicked() {
-                        go_parent = true;
-                    }
-                }
+                egui::Grid::new("archive_grid")
+                    .num_columns(4)
+                    .spacing([14.0, 3.0])
+                    .striped(true)
+                    .show(ui, |ui| {
+                        if !self.inner.is_empty() {
+                            let resp = ui.add(
+                                egui::Button::image_and_text(
+                                    egui::Image::new(&icons.folder_up).fit_to_exact_size(egui::vec2(16.0, 16.0)),
+                                    egui::RichText::new("..").strong(),
+                                )
+                                .frame(false)
+                            );
+                            if resp.double_clicked() {
+                                go_parent = true;
+                            }
+                            ui.label("");
+                            ui.label("");
+                            ui.label("");
+                            ui.end_row();
+                        }
 
-                for (i, row) in rows.iter().enumerate() {
-                    let sel = self.arc_sel == Some(i);
-                    let (mark, color) = if row.is_dir {
-                        ("[D]", egui::Color32::from_rgb(140, 90, 0))
-                    } else {
-                        ("   ", egui::Color32::from_gray(60))
-                    };
-                    let text = format!(
-                        "{mark} {:<34} {:>9} {:>9}  {}",
-                        truncate(&row.name, 34),
-                        if row.is_dir {
-                            String::new()
-                        } else {
-                            human(row.size)
-                        },
-                        if row.packed > 0 {
-                            human(row.packed)
-                        } else {
-                            String::new()
-                        },
-                        row.modified
-                    );
-                    let resp = ui.add(
-                        egui::Button::new(egui::RichText::new(text).monospace().color(color))
-                            .frame(false)
-                            .fill(if sel {
-                                egui::Color32::from_rgb(204, 226, 247)
+                        for (i, row) in rows.iter().enumerate() {
+                            let sel = self.arc_sel == Some(i);
+                            let icon = if row.is_dir {
+                                &icons.folder
                             } else {
-                                egui::Color32::TRANSPARENT
-                            })
-                            .min_size(egui::vec2(ui.available_width(), 18.0)),
-                    );
-                    if resp.clicked() {
-                        clicked = Some(i);
-                        self.focus = Pane::Archive;
-                    }
-                    if resp.double_clicked() {
-                        dbl = Some(i);
-                    }
-                }
+                                &icons.file
+                            };
+
+                            let resp = ui.add(
+                                egui::Button::image_and_text(
+                                    egui::Image::new(icon).fit_to_exact_size(egui::vec2(16.0, 16.0)),
+                                    &row.name,
+                                )
+                                .selected(sel)
+                                .frame(false)
+                            );
+
+                            if resp.clicked() {
+                                clicked = Some(i);
+                                self.focus = Pane::Archive;
+                            }
+                            if resp.double_clicked() {
+                                dbl = Some(i);
+                            }
+
+                            let size_text = if row.is_dir { String::new() } else { human(row.size) };
+                            let pack_text = if row.packed > 0 { human(row.packed) } else { String::new() };
+
+                            ui.label(egui::RichText::new(size_text).monospace());
+                            ui.label(egui::RichText::new(pack_text).monospace());
+                            ui.label(egui::RichText::new(&row.modified).small());
+                            ui.end_row();
+                        }
+                    });
 
                 if let Some(i) = clicked {
                     self.arc_sel = Some(i);
@@ -1199,7 +1387,7 @@ impl SevenRustZip {
             .default_size(460.0)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Viewer").strong());
+                    ui.label(egui::RichText::new("Viewer:").strong());
                     ui.label(
                         egui::RichText::new(&name)
                             .monospace()
@@ -1296,7 +1484,7 @@ impl SevenRustZip {
                     Pane::Archive => "archive",
                 };
                 ui.label(
-                    egui::RichText::new(format!("pane: {pane}"))
+                    egui::RichText::new(format!("active: {pane}"))
                         .small()
                         .color(egui::Color32::from_gray(120)),
                 );
@@ -1304,99 +1492,160 @@ impl SevenRustZip {
         });
     }
 
-    fn ui_create_dialog(&mut self, ui: &egui::Ui) {
-        if !self.show_create {
-            return;
-        }
-        let mut open = self.show_create;
-        egui::Window::new("Create archive")
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .show(ui.ctx(), |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Name:");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.create_name).desired_width(280.0),
-                    );
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Format:");
-                    for f in [
-                        Format::SevenZ,
-                        Format::Zip,
-                        Format::Tar,
-                        Format::TarGz,
-                        Format::TarXz,
-                        Format::TarBz2,
-                        Format::TarZst,
-                    ] {
-                        ui.selectable_value(&mut self.create_fmt, f, f.label());
-                    }
-                });
-                ui.separator();
-                if self.create_sources.is_empty() {
-                    ui.label(
-                        egui::RichText::new("No sources selected")
-                            .italics()
-                            .color(egui::Color32::from_gray(130)),
-                    );
-                }
-                egui::ScrollArea::vertical()
-                    .id_salt("create_sources")
-                    .max_height(120.0)
-                    .show(ui, |ui| {
-                        for s in &self.create_sources {
-                            ui.label(egui::RichText::new(s.display().to_string()).monospace().small());
+    fn ui_dialogs(&mut self, ctx: &egui::Context) {
+        // Create archive dialog
+        if self.show_create {
+            let mut open = self.show_create;
+            egui::Window::new("Add to Archive")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Archive name:");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.create_name).desired_width(280.0),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Archive format:");
+                        for f in [
+                            Format::SevenZ,
+                            Format::Zip,
+                            Format::Tar,
+                            Format::TarGz,
+                            Format::TarXz,
+                            Format::TarBz2,
+                            Format::TarZst,
+                        ] {
+                            ui.selectable_value(&mut self.create_fmt, f, f.label());
                         }
                     });
-                ui.horizontal(|ui| {
-                    if ui.button("Add files…").clicked() {
-                        if let Some(fs) = rfd::FileDialog::new()
-                            .set_directory(&self.cwd)
-                            .pick_files()
-                        {
-                            self.create_sources.extend(fs);
+                    ui.separator();
+                    if self.create_sources.is_empty() {
+                        ui.label(
+                            egui::RichText::new("No files selected")
+                                .italics()
+                                .color(egui::Color32::from_gray(130)),
+                        );
+                    }
+                    egui::ScrollArea::vertical()
+                        .id_salt("create_sources")
+                        .max_height(120.0)
+                        .show(ui, |ui| {
+                            for s in &self.create_sources {
+                                ui.label(egui::RichText::new(s.display().to_string()).monospace().small());
+                            }
+                        });
+                    ui.horizontal(|ui| {
+                        if ui.button("Add files…").clicked() {
+                            if let Some(fs) = rfd::FileDialog::new()
+                                .set_directory(&self.cwd)
+                                .pick_files()
+                            {
+                                self.create_sources.extend(fs);
+                            }
                         }
-                    }
-                    if ui.button("Add folder…").clicked() {
-                        if let Some(d) = rfd::FileDialog::new()
-                            .set_directory(&self.cwd)
-                            .pick_folder()
-                        {
-                            self.create_sources.push(d);
+                        if ui.button("Add folder…").clicked() {
+                            if let Some(d) = rfd::FileDialog::new()
+                                .set_directory(&self.cwd)
+                                .pick_folder()
+                            {
+                                self.create_sources.push(d);
+                            }
                         }
-                    }
-                    if ui.button("Clear").clicked() {
-                        self.create_sources.clear();
-                    }
+                        if ui.button("Clear").clicked() {
+                            self.create_sources.clear();
+                        }
+                    });
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(
+                                !self.create_sources.is_empty(),
+                                egui::Button::new("OK"),
+                            )
+                            .clicked()
+                        {
+                            self.start_create();
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.show_create = false;
+                        }
+                    });
                 });
-                ui.separator();
-                ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(
-                            !self.create_sources.is_empty(),
-                            egui::Button::new("Create"),
-                        )
-                        .clicked()
-                    {
-                        self.start_create();
-                    }
-                    if ui.button("Cancel").clicked() {
-                        self.show_create = false;
-                    }
-                });
-            });
-        self.show_create = open;
-    }
-}
+            self.show_create = open;
+        }
 
-fn truncate(s: &str, n: usize) -> String {
-    if s.chars().count() <= n {
-        s.to_string()
-    } else {
-        let t: String = s.chars().take(n.saturating_sub(1)).collect();
-        format!("{t}…")
+        // Properties / Info dialog
+        if self.show_info {
+            let mut open = self.show_info;
+            let mut close_clicked = false;
+            egui::Window::new(format!("Properties: {}", self.info_title))
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(true)
+                .default_size([380.0, 240.0])
+                .show(ctx, |ui| {
+                    egui::Grid::new("props_grid")
+                        .num_columns(2)
+                        .spacing([18.0, 6.0])
+                        .striped(true)
+                        .show(ui, |ui| {
+                            for (k, v) in &self.info_lines {
+                                ui.label(egui::RichText::new(k).strong());
+                                ui.label(egui::RichText::new(v).monospace());
+                                ui.end_row();
+                            }
+                        });
+                    ui.separator();
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Close").clicked() {
+                            close_clicked = true;
+                        }
+                    });
+                });
+            self.show_info = open && !close_clicked;
+        }
+
+        // Delete confirmation dialog
+        if let Some((target, is_dir)) = self.delete_target.clone() {
+            let mut open = true;
+            let file_name = target.file_name().and_then(|s| s.to_str()).unwrap_or("item");
+            egui::Window::new("Confirm Delete")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    let kind = if is_dir { "folder and all its contents" } else { "file" };
+                    ui.label(format!("Are you sure you want to delete this {kind}?"));
+                    ui.label(egui::RichText::new(file_name).strong());
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("Delete").clicked() {
+                            let res = if is_dir {
+                                std::fs::remove_dir_all(&target)
+                            } else {
+                                std::fs::remove_file(&target)
+                            };
+                            match res {
+                                Ok(()) => {
+                                    self.status = format!("Deleted {}", target.display());
+                                    self.refresh_dir();
+                                }
+                                Err(e) => self.status = format!("Delete failed: {e}"),
+                            }
+                            self.delete_target = None;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.delete_target = None;
+                        }
+                    });
+                });
+            if !open {
+                self.delete_target = None;
+            }
+        }
     }
 }
 
@@ -1409,13 +1658,11 @@ impl eframe::App for SevenRustZip {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        // Keyboard handling needs the current row set; compute once.
         let rows = self.visible_rows();
         let names: Vec<String> = match self.focus {
             Pane::Files => self.dirs.iter().map(|r| r.name.clone()).collect(),
             Pane::Archive => rows.iter().map(|r| r.name.clone()).collect(),
         };
-        // Ignore keys while typing in the search box.
         let typing = ui.ctx().egui_wants_keyboard_input();
         if !typing {
             self.typeahead(ui, &names);
@@ -1433,11 +1680,11 @@ impl eframe::App for SevenRustZip {
         });
 
         self.ui_preview(ui);
-        self.ui_create_dialog(ui);
+        self.ui_dialogs(ui.ctx());
 
         egui::Panel::left("files")
             .resizable(true)
-            .default_size(430.0)
+            .default_size(440.0)
             .show(ui, |ui| {
                 self.ui_files(ui);
             });
@@ -1493,7 +1740,6 @@ fn main() -> eframe::Result<()> {
         return Ok(());
     }
 
-    // Allow opening an archive (or folder) straight from the command line.
     let start = args.get(1).map(PathBuf::from);
 
     let opts = eframe::NativeOptions {
