@@ -1366,8 +1366,14 @@ impl SevenRustZip {
                 self.arc_sel = None;
                 self.dir_sel = None;
             }
-            if ui.button("✖").clicked() {
-                self.filter.clear();
+            if !self.filter.is_empty() {
+                let clear_btn = egui::Button::image(
+                    egui::Image::new(&icons.window_close).fit_to_exact_size(egui::vec2(13.0, 13.0)),
+                )
+                .frame(false);
+                if ui.add(clear_btn).on_hover_text("Clear filter").clicked() {
+                    self.filter.clear();
+                }
             }
         });
     }
@@ -1558,7 +1564,15 @@ impl SevenRustZip {
                 );
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("Close").clicked() {
+                let close_btn = egui::Button::image(
+                    egui::Image::new(&icons.window_close).fit_to_exact_size(egui::vec2(14.0, 14.0)),
+                )
+                .frame(false);
+                if ui
+                    .add(close_btn)
+                    .on_hover_text("Close archive")
+                    .clicked()
+                {
                     self.close_archive();
                 }
             });
@@ -1686,7 +1700,12 @@ impl SevenRustZip {
                             .color(egui::Color32::from_rgb(0, 90, 160)),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("✖").clicked() {
+                        let btn = egui::Button::image(
+                            egui::Image::new(&self.icons.window_close)
+                                .fit_to_exact_size(egui::vec2(14.0, 14.0)),
+                        )
+                        .frame(false);
+                        if ui.add(btn).on_hover_text("Close viewer").clicked() {
                             close = true;
                         }
                     });
@@ -1810,11 +1829,17 @@ impl SevenRustZip {
         // Create archive dialog
         if self.show_create {
             let mut open = self.show_create;
+            let icons = Arc::clone(&self.icons);
             egui::Window::new("Add to Archive")
                 .open(&mut open)
                 .collapsible(false)
                 .resizable(false)
                 .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Image::new(&icons.add).fit_to_exact_size(egui::vec2(22.0, 22.0)));
+                        ui.label(egui::RichText::new("Create New Archive").strong().size(14.0));
+                    });
+                    ui.separator();
                     ui.horizontal(|ui| {
                         ui.label("Archive name:");
                         ui.add(
@@ -1895,12 +1920,18 @@ impl SevenRustZip {
         if self.show_info {
             let mut open = self.show_info;
             let mut close_clicked = false;
+            let icons = Arc::clone(&self.icons);
             egui::Window::new(format!("Properties: {}", self.info_title))
                 .open(&mut open)
                 .collapsible(false)
                 .resizable(true)
                 .default_size([380.0, 240.0])
                 .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Image::new(&icons.info).fit_to_exact_size(egui::vec2(22.0, 22.0)));
+                        ui.label(egui::RichText::new(&self.info_title).strong().size(14.0));
+                    });
+                    ui.separator();
                     egui::Grid::new("props_grid")
                         .num_columns(2)
                         .spacing([18.0, 6.0])
@@ -1926,12 +1957,18 @@ impl SevenRustZip {
         if let Some((target, is_dir)) = self.delete_target.clone() {
             let mut open = true;
             let file_name = target.file_name().and_then(|s| s.to_str()).unwrap_or("item");
+            let icons = Arc::clone(&self.icons);
             egui::Window::new("Confirm Delete")
                 .open(&mut open)
                 .collapsible(false)
                 .resizable(false)
                 .show(ctx, |ui| {
                     let kind = if is_dir { "folder and all its contents" } else { "file" };
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Image::new(&icons.delete).fit_to_exact_size(egui::vec2(24.0, 24.0)));
+                        ui.label(egui::RichText::new("Confirm Deletion").strong().size(14.0));
+                    });
+                    ui.separator();
                     ui.label(format!("Are you sure you want to delete this {kind}?"));
                     ui.label(egui::RichText::new(file_name).strong());
                     ui.separator();
@@ -1961,9 +1998,132 @@ impl SevenRustZip {
             }
         }
     }
+
+    fn ui_titlebar(&mut self, ui: &mut egui::Ui) {
+        let is_maximized = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
+        let icons = Arc::clone(&self.icons);
+
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(8.0, 0.0);
+
+            // Left: App icon and title
+            ui.add(egui::Image::new(&icons.archive).fit_to_exact_size(egui::vec2(20.0, 20.0)));
+            ui.label(
+                egui::RichText::new("7rust-zip")
+                    .strong()
+                    .size(14.0)
+                    .color(egui::Color32::from_rgb(30, 41, 59)),
+            );
+
+            if let Some(arc) = &self.archive {
+                let fname = arc.file_name().and_then(|s| s.to_str()).unwrap_or("archive");
+                ui.label(
+                    egui::RichText::new(format!("— {fname}"))
+                        .size(13.0)
+                        .color(egui::Color32::from_rgb(2, 132, 199)),
+                );
+            }
+
+            // Draggable space across the middle
+            let avail = ui.available_size_before_wrap();
+            let button_bar_width = 105.0;
+            let drag_width = (avail.x - button_bar_width).max(20.0);
+            let (_drag_rect, drag_resp) =
+                ui.allocate_exact_size(egui::vec2(drag_width, 26.0), egui::Sense::click_and_drag());
+            if drag_resp.dragged() {
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+            }
+            if drag_resp.double_clicked() {
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!is_maximized));
+            }
+
+            // Right: Window controls (reduit, maximise, close) — enlarged to 20x20
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(8.0, 0.0);
+
+                let btn_size = egui::vec2(20.0, 20.0);
+
+                // Close button (red)
+                let close_btn = egui::Button::image(
+                    egui::Image::new(&icons.window_close).fit_to_exact_size(btn_size),
+                )
+                .frame(false);
+                if ui.add(close_btn).on_hover_text("Close (Fermer)").clicked() {
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+
+                // Maximize / Restore button (green/teal)
+                let max_icon = if is_maximized {
+                    &icons.window_restore
+                } else {
+                    &icons.window_maximize
+                };
+                let max_tip = if is_maximized {
+                    "Restore (Restaurer)"
+                } else {
+                    "Maximize (Maximiser)"
+                };
+                let max_btn = egui::Button::image(
+                    egui::Image::new(max_icon).fit_to_exact_size(btn_size),
+                )
+                .frame(false);
+                if ui.add(max_btn).on_hover_text(max_tip).clicked() {
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!is_maximized));
+                }
+
+                // Minimize / Reduit button (amber)
+                let min_btn = egui::Button::image(
+                    egui::Image::new(&icons.window_minimize).fit_to_exact_size(btn_size),
+                )
+                .frame(false);
+                if ui.add(min_btn).on_hover_text("Minimize (Réduire)").clicked() {
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                }
+            });
+        });
+    }
+}
+
+fn handle_window_resize(ui: &mut egui::Ui, app_rect: egui::Rect) {
+    let border_hit = 8.0;
+    let outer_rect = app_rect.expand(border_hit);
+    let inner_rect = app_rect.shrink(border_hit);
+
+    let Some(pointer_pos) = ui.ctx().pointer_latest_pos() else { return };
+    if !outer_rect.contains(pointer_pos) || inner_rect.contains(pointer_pos) {
+        return;
+    }
+
+    let left = pointer_pos.x < app_rect.left() + border_hit;
+    let right = pointer_pos.x > app_rect.right() - border_hit;
+    let top = pointer_pos.y < app_rect.top() + border_hit;
+    let bottom = pointer_pos.y > app_rect.bottom() - border_hit;
+
+    let (dir, cursor) = match (left, right, top, bottom) {
+        (true, false, true, false) => (Some(egui::ResizeDirection::NorthWest), egui::CursorIcon::ResizeNorthWest),
+        (false, true, true, false) => (Some(egui::ResizeDirection::NorthEast), egui::CursorIcon::ResizeNorthEast),
+        (true, false, false, true) => (Some(egui::ResizeDirection::SouthWest), egui::CursorIcon::ResizeSouthWest),
+        (false, true, false, true) => (Some(egui::ResizeDirection::SouthEast), egui::CursorIcon::ResizeSouthEast),
+        (true, false, false, false) => (Some(egui::ResizeDirection::West), egui::CursorIcon::ResizeWest),
+        (false, true, false, false) => (Some(egui::ResizeDirection::East), egui::CursorIcon::ResizeEast),
+        (false, false, true, false) => (Some(egui::ResizeDirection::North), egui::CursorIcon::ResizeNorth),
+        (false, false, false, true) => (Some(egui::ResizeDirection::South), egui::CursorIcon::ResizeSouth),
+        _ => (None, egui::CursorIcon::Default),
+    };
+
+    if let Some(dir) = dir {
+        ui.ctx().set_cursor_icon(cursor);
+        if ui.input(|i| i.pointer.button_down(egui::PointerButton::Primary)) {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::BeginResize(dir));
+        }
+    }
 }
 
 impl eframe::App for SevenRustZip {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        [0.0, 0.0, 0.0, 0.0]
+    }
+
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll();
         if self.busy {
@@ -1972,40 +2132,115 @@ impl eframe::App for SevenRustZip {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let is_maximized = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
+        let shadow_margin: f32 = if is_maximized { 0.0 } else { 14.0 };
+        let corner_radius: u8 = if is_maximized { 0 } else { 10 };
+
+        let outer_rect = ui.available_rect_before_wrap();
+        let app_rect = outer_rect.shrink(shadow_margin);
+
+        if !is_maximized {
+            // Drop shadow behind the main app window to make it stand out against white backgrounds
+            let ambient_shadow = egui::Shadow {
+                offset: [0, 2],
+                blur: 16,
+                spread: 2,
+                color: egui::Color32::from_black_alpha(45),
+            };
+            ui.painter().add(ambient_shadow.as_shape(app_rect, corner_radius));
+
+            let key_shadow = egui::Shadow {
+                offset: [0, 6],
+                blur: 14,
+                spread: 1,
+                color: egui::Color32::from_black_alpha(65),
+            };
+            ui.painter().add(key_shadow.as_shape(app_rect, corner_radius));
+
+            // Edge resize interaction for borderless window
+            handle_window_resize(ui, app_rect);
+        }
+
+        // Fill background of main app window
+        ui.painter().rect_filled(app_rect, corner_radius, egui::Color32::from_rgb(240, 240, 243));
+
+        // Child UI hosting all app panels within the rounded window rect
+        let mut child_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(app_rect)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+
         let rows = self.visible_rows();
         let names: Vec<String> = match self.focus {
             Pane::Files => self.dirs.iter().map(|r| r.name.clone()).collect(),
             Pane::Archive => rows.iter().map(|r| r.name.clone()).collect(),
         };
-        let typing = ui.ctx().egui_wants_keyboard_input();
+        let typing = child_ui.ctx().egui_wants_keyboard_input();
         if !typing {
-            self.typeahead(ui, &names);
-            self.handle_keys(ui, &rows);
+            self.typeahead(&mut child_ui, &names);
+            self.handle_keys(&mut child_ui, &rows);
         }
 
-        egui::Panel::top("toolbar").show(ui, |ui| {
-            ui.add_space(2.0);
-            self.ui_toolbar(ui);
-            ui.add_space(2.0);
-        });
+        let titlebar_frame = egui::Frame::NONE
+            .fill(egui::Color32::from_rgb(235, 237, 241))
+            .corner_radius(egui::CornerRadius {
+                nw: corner_radius,
+                ne: corner_radius,
+                sw: 0,
+                se: 0,
+            })
+            .inner_margin(egui::Margin::symmetric(10, 6));
+        egui::Panel::top("window_titlebar")
+            .frame(titlebar_frame)
+            .show(&mut child_ui, |ui| {
+                self.ui_titlebar(ui);
+            });
 
-        egui::Panel::bottom("status").show(ui, |ui| {
-            self.ui_status(ui);
-        });
+        let toolbar_frame = egui::Frame::NONE
+            .fill(egui::Color32::from_rgb(246, 247, 249))
+            .inner_margin(egui::Margin::symmetric(8, 4));
+        egui::Panel::top("toolbar")
+            .frame(toolbar_frame)
+            .show(&mut child_ui, |ui| {
+                self.ui_toolbar(ui);
+            });
 
-        self.ui_preview(ui);
-        self.ui_dialogs(ui.ctx());
+        let status_frame = egui::Frame::NONE
+            .fill(egui::Color32::from_rgb(238, 240, 244))
+            .corner_radius(egui::CornerRadius {
+                nw: 0,
+                ne: 0,
+                sw: corner_radius,
+                se: corner_radius,
+            })
+            .inner_margin(egui::Margin::symmetric(10, 4));
+        egui::Panel::bottom("status")
+            .frame(status_frame)
+            .show(&mut child_ui, |ui| {
+                self.ui_status(ui);
+            });
+
+        self.ui_preview(&mut child_ui);
+        self.ui_dialogs(child_ui.ctx());
 
         egui::Panel::left("files")
             .resizable(true)
             .default_size(440.0)
-            .show(ui, |ui| {
+            .frame(egui::Frame::NONE.fill(egui::Color32::from_rgb(248, 249, 251)))
+            .show(&mut child_ui, |ui| {
                 self.ui_files(ui);
             });
 
-        egui::CentralPanel::default().show(ui, |ui| {
-            self.ui_archive(ui);
-        });
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE.fill(egui::Color32::WHITE))
+            .show(&mut child_ui, |ui| {
+                self.ui_archive(ui);
+            });
+
+        // Crisp border outline around the window to make it stand out against white backgrounds
+        let border_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(148, 163, 184)); // Slate-400
+        ui.painter().rect_stroke(app_rect, corner_radius, border_stroke, egui::StrokeKind::Inside);
     }
 }
 
@@ -2061,7 +2296,9 @@ fn main() -> eframe::Result<()> {
             .with_inner_size([1180.0, 720.0])
             .with_min_inner_size([760.0, 460.0])
             .with_title("7rust-zip")
-            .with_icon(window_icon()),
+            .with_icon(window_icon())
+            .with_decorations(false)
+            .with_transparent(true),
         ..Default::default()
     };
     eframe::run_native(

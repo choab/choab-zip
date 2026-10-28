@@ -15,6 +15,10 @@ pub struct Icons {
     pub file: egui::TextureHandle,
     pub up: egui::TextureHandle,
     pub refresh: egui::TextureHandle,
+    pub window_minimize: egui::TextureHandle,
+    pub window_maximize: egui::TextureHandle,
+    pub window_restore: egui::TextureHandle,
+    pub window_close: egui::TextureHandle,
 }
 
 fn load(ctx: &egui::Context, name: &str, bytes: &[u8]) -> egui::TextureHandle {
@@ -23,7 +27,7 @@ fn load(ctx: &egui::Context, name: &str, bytes: &[u8]) -> egui::TextureHandle {
         [icon.width as usize, icon.height as usize],
         &icon.rgba,
     );
-    ctx.load_texture(name, image, egui::TextureOptions::NEAREST)
+    ctx.load_texture(name, image, egui::TextureOptions::LINEAR)
 }
 
 impl Icons {
@@ -42,6 +46,10 @@ impl Icons {
             file: load(ctx, "icon_file", include_bytes!("../assets/icons/file16.png")),
             up: load(ctx, "icon_up", include_bytes!("../assets/icons/up.png")),
             refresh: load(ctx, "icon_refresh", include_bytes!("../assets/icons/refresh.png")),
+            window_minimize: load(ctx, "icon_win_minimize", include_bytes!("../assets/icons/window_minimize.png")),
+            window_maximize: load(ctx, "icon_win_maximize", include_bytes!("../assets/icons/window_maximize.png")),
+            window_restore: load(ctx, "icon_win_restore", include_bytes!("../assets/icons/window_restore.png")),
+            window_close: load(ctx, "icon_win_close", include_bytes!("../assets/icons/window_close.png")),
         })
     }
 }
