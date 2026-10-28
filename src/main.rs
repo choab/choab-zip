@@ -829,8 +829,10 @@ fn looks_like_archive(path: &Path) -> bool {
 /// Width reserved on the right of the titlebar for the window buttons.
 const BUTTON_BAR_W: f32 = 108.0;
 
-const ROW_H: f32 = 21.0;
-const ROW_ICON: f32 = 16.0;
+const ROW_H: f32 = 22.0;
+const ROW_ICON: f32 = 17.0;
+/// The list text is set one point above the theme default so rows read comfortably.
+const ROW_TEXT_BOOST: f32 = 1.0;
 const ROW_PAD: f32 = 4.0;
 const COL_NUM: f32 = 84.0;
 const COL_DATE: f32 = 116.0;
@@ -941,8 +943,10 @@ fn row(
         egui::Color32::WHITE,
     );
 
-    let name_font = egui::TextStyle::Body.resolve(ui.style());
-    let num_font = egui::TextStyle::Monospace.resolve(ui.style());
+    let name_font =
+        egui::FontId::proportional(egui::TextStyle::Body.resolve(ui.style()).size + ROW_TEXT_BOOST);
+    let num_font =
+        egui::FontId::monospace(egui::TextStyle::Monospace.resolve(ui.style()).size + ROW_TEXT_BOOST);
     let cy = rect.center().y;
 
     let galley = elide(ui, name, name_font, ROW_TEXT, cols.name_right - cols.name_left);
@@ -978,7 +982,7 @@ fn row(
             egui::pos2(cols.date_right, cy),
             egui::Align2::RIGHT_CENTER,
             date,
-            egui::FontId::proportional(11.5),
+            egui::FontId::proportional(11.5 + ROW_TEXT_BOOST),
             ROW_DIM,
         );
     }
@@ -1005,7 +1009,8 @@ fn header(
         egui::Stroke::new(1.0, egui::Color32::from_rgb(212, 212, 212)),
     );
 
-    let font = egui::TextStyle::Body.resolve(ui.style());
+    let font =
+        egui::FontId::proportional(egui::TextStyle::Body.resolve(ui.style()).size + ROW_TEXT_BOOST);
     let cy = rect.center().y;
     let arrow = |c: SortCol| {
         if current == c {
