@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=7rust-zip
+GenericName=Archive Manager
+Comment=Native 7-Zip-style archiver for Linux, written in pure Rust
+Exec=7rust-zip %F
+Icon=7rust-zip
+Terminal=false
+Categories=Utility;Archiving;FileTools;
+MimeType=application/x-7z-compressed;application/zip;application/x-tar;application/gzip;application/x-xz;application/x-bzip2;application/zstd;application/x-rar-compressed;
+Keywords=archive;7z;zip;tar;compress;extract;
+StartupNotify=true
+StartupWMClass=7rust-zip

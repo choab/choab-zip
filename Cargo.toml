@@ -1,0 +1,27 @@
+[package]
+name = "rustzip7"
+version = "0.1.0"
+edition = "2021"
+description = "Native, 7-Zip-style archiver for Linux — pure Rust"
+
+[[bin]]
+name = "7rust-zip"
+path = "src/main.rs"
+
+[dependencies]
+sevenz-rust2 = { version = "0.24", features = ["compress", "aes256", "bzip2", "zstd", "lz4", "brotli", "deflate"] }
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
+egui = "0.37"
+rfd = "0.17"
+zip = { version = "9", default-features = false, features = ["deflate", "bzip2", "zstd", "lzma", "time"] }
+tar = "0.4"
+flate2 = "1"
+xz2 = "0.1"
+bzip2 = "0.6"
+zstd = "0.13"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

@@ -1,0 +1,16 @@
+/target
+**/*.rs.bk
+
+# Build artifacts
+/target/
+**/target/
+Cargo.lock.bak
+
+# Editor / OS cruft
+*.swp
+*~
+.DS_Store
+
+# Local run output
+/dist/
+*.tmp
