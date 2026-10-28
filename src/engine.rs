@@ -390,6 +390,40 @@ fn zip_time(d: &zip::DateTime) -> String {
     )
 }
 
+/// Extract a single entry, or every entry under a directory prefix.
+///
+/// Paths stay archive-relative, matching 7-Zip: selecting `sub/x.txt` writes
+/// `<dest>/sub/x.txt`. Each file is decoded one at a time, so peak memory is
+/// the largest selected file rather than the whole selection.
+pub fn extract_entry(archive: &Path, entry_path: &str, dest: &Path) -> Result<usize> {
+    std::fs::create_dir_all(dest)?;
+    let want = entry_path.trim_end_matches('/');
+    let prefix = format!("{want}/");
+
+    let all = list(archive)?;
+    let selected: Vec<String> = all
+        .iter()
+        .filter(|e| !e.is_dir && (e.path == want || e.path.starts_with(&prefix)))
+        .map(|e| e.path.clone())
+        .collect();
+
+    if selected.is_empty() {
+        return Err(Error::Other(format!("no such entry: {want}")));
+    }
+
+    let mut n = 0;
+    for rel in &selected {
+        let out = dest.join(rel);
+        if let Some(parent) = out.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let data = read_entry(archive, rel)?;
+        std::fs::write(&out, data)?;
+        n += 1;
+    }
+    Ok(n)
+}
+
 /// Extract everything in `archive` into `dest`.
 pub fn extract(archive: &Path, dest: &Path) -> Result<usize> {
     std::fs::create_dir_all(dest)?;

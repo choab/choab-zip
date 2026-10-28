@@ -514,6 +514,45 @@ impl SevenRustZip {
         });
     }
 
+    /// Archive-relative path of the row selected in the archive pane.
+    fn selected_entry_path(&self) -> Option<String> {
+        let rows = self.visible_rows();
+        let i = self.arc_sel?;
+        let item = rows.get(i)?;
+        Some(if self.inner.is_empty() {
+            item.name.clone()
+        } else {
+            format!("{}{}", self.inner, item.name)
+        })
+    }
+
+    /// Extract only the selected entry (or the selected directory subtree).
+    fn extract_selected(&mut self) {
+        let Some(archive) = self.archive.clone() else {
+            return;
+        };
+        let Some(entry) = self.selected_entry_path() else {
+            self.status = "Select an item in the archive to extract".into();
+            return;
+        };
+        let Some(dest) = rfd::FileDialog::new().set_directory(&self.cwd).pick_folder() else {
+            return;
+        };
+        self.busy = true;
+        self.status = format!("Extracting {entry}…");
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            match engine::extract_entry(&archive, &entry, &dest) {
+                Ok(n) => {
+                    let _ = tx.send(Msg::Done(format!("Extracted {n} item(s) from {entry}"), true));
+                }
+                Err(e) => {
+                    let _ = tx.send(Msg::Done(format!("Extract failed: {e}"), false));
+                }
+            }
+        });
+    }
+
     fn run_verify(&mut self) {
         let Some(archive) = self.archive.clone() else {
             return;
@@ -772,6 +811,276 @@ fn looks_like_archive(path: &Path) -> bool {
         || head.starts_with(b"Rar!")
 }
 
+// -- list geometry -----------------------------------------------------------
+// Rows are painted by hand rather than placed in an egui::Grid so that the
+// selection highlight covers the whole row, and so every click across the row
+// hits the same item. A Grid would only make the name cell clickable.
+
+const ROW_H: f32 = 21.0;
+const ROW_ICON: f32 = 16.0;
+const ROW_PAD: f32 = 4.0;
+const COL_NUM: f32 = 84.0;
+const COL_DATE: f32 = 116.0;
+
+const ROW_SELECTED: egui::Color32 = egui::Color32::from_rgb(204, 226, 247);
+const ROW_HOVER: egui::Color32 = egui::Color32::from_rgb(232, 240, 250);
+const ROW_FOCUS: egui::Color32 = egui::Color32::from_rgb(120, 170, 220);
+const ROW_TEXT: egui::Color32 = egui::Color32::from_rgb(24, 24, 24);
+const ROW_DIM: egui::Color32 = egui::Color32::from_rgb(110, 110, 110);
+
+/// Horizontal layout for one list row.
+struct RowCols {
+    icon: egui::Rect,
+    name_left: f32,
+    name_right: f32,
+    size_right: f32,
+    packed_right: Option<f32>,
+    date_right: f32,
+}
+
+impl RowCols {
+    fn new(rect: egui::Rect, show_packed: bool) -> Self {
+        let icon = egui::Rect::from_min_size(
+            egui::pos2(rect.left() + ROW_PAD, rect.center().y - ROW_ICON / 2.0),
+            egui::vec2(ROW_ICON, ROW_ICON),
+        );
+        let date_right = rect.right() - ROW_PAD;
+        let date_left = date_right - COL_DATE;
+
+        let (packed_right, size_right) = if show_packed {
+            let packed_right = date_left - 4.0;
+            (Some(packed_right), packed_right - COL_NUM)
+        } else {
+            (None, date_left)
+        };
+
+        Self {
+            icon,
+            name_left: icon.right() + 6.0,
+            name_right: size_right - COL_NUM - 6.0,
+            size_right: size_right - 4.0,
+            packed_right,
+            date_right,
+        }
+    }
+}
+
+/// Truncate `text` with an ellipsis so it fits `max_w`.
+fn elide(ui: &egui::Ui, text: &str, font: egui::FontId, color: egui::Color32, max_w: f32) -> std::sync::Arc<egui::Galley> {
+    let measure = |s: &str| {
+        ui.painter().layout_no_wrap(s.to_owned(), font.clone(), color)
+    };
+    let full = measure(text);
+    if full.size().x <= max_w || max_w <= 0.0 {
+        return full;
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let (mut lo, mut hi) = (0usize, chars.len());
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        let trial: String = chars[..mid].iter().collect::<String>() + "…";
+        if measure(&trial).size().x <= max_w {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    let cut: String = chars[..lo].iter().collect::<String>() + "…";
+    measure(&cut)
+}
+
+/// Paint one list row and return its full-width click response.
+#[allow(clippy::too_many_arguments)]
+fn row(
+    ui: &mut egui::Ui,
+    icon: egui::TextureId,
+    name: &str,
+    size: &str,
+    packed: &str,
+    date: &str,
+    selected: bool,
+    focused: bool,
+    show_packed: bool,
+) -> egui::Response {
+    let width = ui.available_width().max(240.0);
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, ROW_H), egui::Sense::click());
+    let cols = RowCols::new(rect, show_packed);
+
+    let painter = ui.painter();
+    if selected {
+        painter.rect_filled(rect, 2.0, ROW_SELECTED);
+        if focused {
+            painter.rect_stroke(
+                rect.shrink(0.5),
+                2.0,
+                egui::Stroke::new(1.0, ROW_FOCUS),
+                egui::StrokeKind::Inside,
+            );
+        }
+    } else if resp.hovered() {
+        painter.rect_filled(rect, 2.0, ROW_HOVER);
+    }
+
+    painter.image(
+        icon,
+        cols.icon,
+        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+        egui::Color32::WHITE,
+    );
+
+    let name_font = egui::TextStyle::Body.resolve(ui.style());
+    let num_font = egui::TextStyle::Monospace.resolve(ui.style());
+    let cy = rect.center().y;
+
+    let galley = elide(ui, name, name_font, ROW_TEXT, cols.name_right - cols.name_left);
+    let painter = ui.painter();
+    painter.galley(
+        egui::pos2(cols.name_left, cy - galley.size().y / 2.0),
+        galley,
+        ROW_TEXT,
+    );
+
+    if !size.is_empty() {
+        painter.text(
+            egui::pos2(cols.size_right, cy),
+            egui::Align2::RIGHT_CENTER,
+            size,
+            num_font.clone(),
+            ROW_DIM,
+        );
+    }
+    if let Some(pr) = cols.packed_right {
+        if !packed.is_empty() {
+            painter.text(
+                egui::pos2(pr, cy),
+                egui::Align2::RIGHT_CENTER,
+                packed,
+                num_font,
+                ROW_DIM,
+            );
+        }
+    }
+    if !date.is_empty() {
+        painter.text(
+            egui::pos2(cols.date_right, cy),
+            egui::Align2::RIGHT_CENTER,
+            date,
+            egui::FontId::proportional(11.5),
+            ROW_DIM,
+        );
+    }
+
+    resp
+}
+
+/// Column header whose segments are clickable to change the sort.
+fn header(
+    ui: &mut egui::Ui,
+    labels: [(&str, SortCol); 4],
+    current: SortCol,
+    ascending: bool,
+    show_packed: bool,
+) -> Option<SortCol> {
+    let width = ui.available_width().max(240.0);
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, ROW_H), egui::Sense::click());
+    let cols = RowCols::new(rect, show_packed);
+
+    let painter = ui.painter();
+    painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(238, 238, 238));
+    painter.line_segment(
+        [rect.left_bottom(), rect.right_bottom()],
+        egui::Stroke::new(1.0, egui::Color32::from_rgb(212, 212, 212)),
+    );
+
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let cy = rect.center().y;
+    let arrow = |c: SortCol| {
+        if current == c {
+            if ascending {
+                " ▲"
+            } else {
+                " ▼"
+            }
+        } else {
+            ""
+        }
+    };
+
+    // Name occupies everything from the icon to the numeric columns.
+    painter.text(
+        egui::pos2(cols.name_left, cy),
+        egui::Align2::LEFT_CENTER,
+        format!("{}{}", labels[0].0, arrow(labels[0].1)),
+        font.clone(),
+        ROW_TEXT,
+    );
+
+    let mut regions: Vec<(egui::Rect, SortCol)> = Vec::with_capacity(4);
+    regions.push((
+        egui::Rect::from_min_max(egui::pos2(rect.left(), rect.top()), egui::pos2(cols.size_right - COL_NUM, rect.bottom())),
+        labels[0].1,
+    ));
+
+    painter.text(
+        egui::pos2(cols.size_right, cy),
+        egui::Align2::RIGHT_CENTER,
+        format!("{}{}", labels[1].0, arrow(labels[1].1)),
+        font.clone(),
+        ROW_TEXT,
+    );
+    regions.push((
+        egui::Rect::from_min_max(
+            egui::pos2(cols.size_right - COL_NUM, rect.top()),
+            egui::pos2(cols.size_right + 4.0, rect.bottom()),
+        ),
+        labels[1].1,
+    ));
+
+    let mut next = 2usize;
+    if let Some(pr) = cols.packed_right {
+        painter.text(
+            egui::pos2(pr, cy),
+            egui::Align2::RIGHT_CENTER,
+            format!("{}{}", labels[2].0, arrow(labels[2].1)),
+            font.clone(),
+            ROW_TEXT,
+        );
+        regions.push((
+            egui::Rect::from_min_max(
+                egui::pos2(pr - COL_NUM, rect.top()),
+                egui::pos2(pr + 4.0, rect.bottom()),
+            ),
+            labels[2].1,
+        ));
+        next = 3;
+    }
+
+    painter.text(
+        egui::pos2(cols.date_right, cy),
+        egui::Align2::RIGHT_CENTER,
+        format!("{}{}", labels[next].0, arrow(labels[next].1)),
+        font,
+        ROW_TEXT,
+    );
+    regions.push((
+        egui::Rect::from_min_max(
+            egui::pos2(cols.date_right - COL_DATE, rect.top()),
+            egui::pos2(rect.right(), rect.bottom()),
+        ),
+        labels[next].1,
+    ));
+
+    if resp.clicked() {
+        if let Some(pos) = resp.interact_pointer_pos() {
+            return regions
+                .into_iter()
+                .find(|(r, _)| r.contains(pos))
+                .map(|(_, c)| c);
+        }
+    }
+    None
+}
+
 fn cmp_names(a: &str, b: &str) -> std::cmp::Ordering {
     a.to_lowercase()
         .cmp(&b.to_lowercase())
@@ -896,6 +1205,22 @@ impl SevenRustZip {
                 {
                     self.extract_to(d);
                 }
+            }
+
+            // Extract only the selected entry inside the archive.
+            let sel_entry = self.selected_entry_path();
+            if ui
+                .add_enabled(
+                    sel_entry.is_some(),
+                    egui::Button::image_and_text(
+                        egui::Image::new(&icons.extract).fit_to_exact_size(egui::vec2(22.0, 22.0)),
+                        "Extract Sel.",
+                    ),
+                )
+                .on_hover_text("Extract only the selected item")
+                .clicked()
+            {
+                self.extract_selected();
             }
 
             // 7-Zip Test Button
@@ -1094,33 +1419,22 @@ impl SevenRustZip {
                     .color(egui::Color32::from_gray(80)),
             );
         });
-        ui.separator();
 
-        // Column Sort Header
-        ui.horizontal(|ui| {
-            let mut clicked = None;
-            for (label, col) in [
+        let focused_pane = self.focus == Pane::Files;
+        if let Some(c) = header(
+            ui,
+            [
                 ("Name", SortCol::Name),
                 ("Size", SortCol::Size),
+                ("Packed", SortCol::Packed),
                 ("Modified", SortCol::Modified),
-            ] {
-                let marker = if self.sort_col == col {
-                    if self.ascending { " ▲" } else { " ▼" }
-                } else {
-                    ""
-                };
-                if ui
-                    .add(egui::Button::new(egui::RichText::new(format!("{label}{marker}")).strong().small()).frame(false))
-                    .clicked()
-                {
-                    clicked = Some(col);
-                }
-            }
-            if let Some(c) = clicked {
-                self.toggle_sort(c);
-            }
-        });
-        ui.separator();
+            ],
+            self.sort_col,
+            self.ascending,
+            false,
+        ) {
+            self.toggle_sort(c);
+        }
 
         egui::ScrollArea::both()
             .id_salt("files_scroll")
@@ -1130,65 +1444,57 @@ impl SevenRustZip {
                 let mut dbl = None;
                 let mut go_parent = false;
 
-                egui::Grid::new("files_grid")
-                    .num_columns(3)
-                    .spacing([12.0, 3.0])
-                    .striped(true)
-                    .show(ui, |ui| {
-                        // 7-Zip pins a ".." row at the top of every listing.
-                        if self.cwd.parent().is_some() {
-                            let resp = ui.add(
-                                egui::Button::image_and_text(
-                                    egui::Image::new(&icons.folder_up).fit_to_exact_size(egui::vec2(16.0, 16.0)),
-                                    egui::RichText::new("..").strong(),
-                                )
-                                .frame(false)
-                            );
-                            if resp.double_clicked() {
-                                go_parent = true;
-                            }
-                            ui.label("");
-                            ui.label("");
-                            ui.end_row();
-                        }
+                // 7-Zip pins a ".." row at the top of every listing.
+                if self.cwd.parent().is_some() {
+                    let r = row(
+                        ui,
+                        icons.folder_up.id(),
+                        "..",
+                        "",
+                        "",
+                        "",
+                        false,
+                        false,
+                        false,
+                    );
+                    if r.double_clicked() {
+                        go_parent = true;
+                    }
+                }
 
-                        for (i, row) in self.dirs.iter().enumerate() {
-                            let sel = self.dir_sel == Some(i);
-                            let icon = if row.is_dir {
-                                &icons.folder
-                            } else if row.is_archive {
-                                &icons.archive
-                            } else {
-                                &icons.file
-                            };
-
-                            let resp = ui.add(
-                                egui::Button::image_and_text(
-                                    egui::Image::new(icon).fit_to_exact_size(egui::vec2(16.0, 16.0)),
-                                    &row.name,
-                                )
-                                .selected(sel)
-                                .frame(false)
-                            );
-
-                            if resp.clicked() {
-                                clicked = Some(i);
-                                self.focus = Pane::Files;
-                            }
-                            if resp.double_clicked() {
-                                dbl = Some(i);
-                            }
-
-                            let size_text = if row.is_dir {
-                                String::new()
-                            } else {
-                                human(row.size)
-                            };
-                            ui.label(egui::RichText::new(size_text).monospace());
-                            ui.label(egui::RichText::new(&row.modified).small());
-                            ui.end_row();
-                        }
-                    });
+                for (i, entry) in self.dirs.iter().enumerate() {
+                    let sel = self.dir_sel == Some(i);
+                    let icon = if entry.is_dir {
+                        icons.folder.id()
+                    } else if entry.is_archive {
+                        icons.archive.id()
+                    } else {
+                        icons.file.id()
+                    };
+                    let size_text = if entry.is_dir {
+                        String::new()
+                    } else {
+                        human(entry.size)
+                    };
+                    let r = row(
+                        ui,
+                        icon,
+                        &entry.name,
+                        &size_text,
+                        "",
+                        &entry.modified,
+                        sel,
+                        focused_pane,
+                        false,
+                    );
+                    if r.clicked() {
+                        clicked = Some(i);
+                        self.focus = Pane::Files;
+                    }
+                    if r.double_clicked() {
+                        dbl = Some(i);
+                    }
+                }
 
                 if let Some(i) = clicked {
                     self.dir_sel = Some(i);
@@ -1260,33 +1566,22 @@ impl SevenRustZip {
         ui.separator();
 
         let rows = self.visible_rows();
+        let focused_pane = self.focus == Pane::Archive;
 
-        // Column Sort Header
-        ui.horizontal(|ui| {
-            let mut clicked = None;
-            for (label, col) in [
+        if let Some(c) = header(
+            ui,
+            [
                 ("Name", SortCol::Name),
                 ("Size", SortCol::Size),
                 ("Packed", SortCol::Packed),
                 ("Modified", SortCol::Modified),
-            ] {
-                let marker = if self.sort_col == col {
-                    if self.ascending { " ▲" } else { " ▼" }
-                } else {
-                    ""
-                };
-                if ui
-                    .add(egui::Button::new(egui::RichText::new(format!("{label}{marker}")).strong().small()).frame(false))
-                    .clicked()
-                {
-                    clicked = Some(col);
-                }
-            }
-            if let Some(c) = clicked {
-                self.toggle_sort(c);
-            }
-        });
-        ui.separator();
+            ],
+            self.sort_col,
+            self.ascending,
+            true,
+        ) {
+            self.toggle_sort(c);
+        }
 
         egui::ScrollArea::both()
             .id_salt("archive_scroll")
@@ -1304,62 +1599,59 @@ impl SevenRustZip {
                 let mut dbl = None;
                 let mut go_parent = false;
 
-                egui::Grid::new("archive_grid")
-                    .num_columns(4)
-                    .spacing([14.0, 3.0])
-                    .striped(true)
-                    .show(ui, |ui| {
-                        if !self.inner.is_empty() {
-                            let resp = ui.add(
-                                egui::Button::image_and_text(
-                                    egui::Image::new(&icons.folder_up).fit_to_exact_size(egui::vec2(16.0, 16.0)),
-                                    egui::RichText::new("..").strong(),
-                                )
-                                .frame(false)
-                            );
-                            if resp.double_clicked() {
-                                go_parent = true;
-                            }
-                            ui.label("");
-                            ui.label("");
-                            ui.label("");
-                            ui.end_row();
-                        }
+                if !self.inner.is_empty() {
+                    let r = row(
+                        ui,
+                        icons.folder_up.id(),
+                        "..",
+                        "",
+                        "",
+                        "",
+                        false,
+                        false,
+                        true,
+                    );
+                    if r.double_clicked() {
+                        go_parent = true;
+                    }
+                }
 
-                        for (i, row) in rows.iter().enumerate() {
-                            let sel = self.arc_sel == Some(i);
-                            let icon = if row.is_dir {
-                                &icons.folder
-                            } else {
-                                &icons.file
-                            };
-
-                            let resp = ui.add(
-                                egui::Button::image_and_text(
-                                    egui::Image::new(icon).fit_to_exact_size(egui::vec2(16.0, 16.0)),
-                                    &row.name,
-                                )
-                                .selected(sel)
-                                .frame(false)
-                            );
-
-                            if resp.clicked() {
-                                clicked = Some(i);
-                                self.focus = Pane::Archive;
-                            }
-                            if resp.double_clicked() {
-                                dbl = Some(i);
-                            }
-
-                            let size_text = if row.is_dir { String::new() } else { human(row.size) };
-                            let pack_text = if row.packed > 0 { human(row.packed) } else { String::new() };
-
-                            ui.label(egui::RichText::new(size_text).monospace());
-                            ui.label(egui::RichText::new(pack_text).monospace());
-                            ui.label(egui::RichText::new(&row.modified).small());
-                            ui.end_row();
-                        }
-                    });
+                for (i, item) in rows.iter().enumerate() {
+                    let sel = self.arc_sel == Some(i);
+                    let icon = if item.is_dir {
+                        icons.folder.id()
+                    } else {
+                        icons.file.id()
+                    };
+                    let size_text = if item.is_dir {
+                        String::new()
+                    } else {
+                        human(item.size)
+                    };
+                    let pack_text = if item.packed > 0 {
+                        human(item.packed)
+                    } else {
+                        String::new()
+                    };
+                    let r = row(
+                        ui,
+                        icon,
+                        &item.name,
+                        &size_text,
+                        &pack_text,
+                        &item.modified,
+                        sel,
+                        focused_pane,
+                        true,
+                    );
+                    if r.clicked() {
+                        clicked = Some(i);
+                        self.focus = Pane::Archive;
+                    }
+                    if r.double_clicked() {
+                        dbl = Some(i);
+                    }
+                }
 
                 if let Some(i) = clicked {
                     self.arc_sel = Some(i);
@@ -1488,6 +1780,28 @@ impl SevenRustZip {
                         .small()
                         .color(egui::Color32::from_gray(120)),
                 );
+                // Mirror 7-Zip, which lists the selected item in the status bar.
+                let selected = match self.focus {
+                    Pane::Files => self
+                        .dir_sel
+                        .and_then(|i| self.dirs.get(i))
+                        .map(|r| (r.name.clone(), if r.is_dir { String::new() } else { human(r.size) })),
+                    Pane::Archive => self.arc_sel.and_then(|i| {
+                        self.visible_rows()
+                            .get(i)
+                            .map(|r| (r.name.clone(), if r.is_dir { String::new() } else { human(r.size) }))
+                    }),
+                };
+                if let Some((name, size)) = selected {
+                    ui.separator();
+                    if size.is_empty() {
+                        ui.label(egui::RichText::new(name).small());
+                    } else {
+                        ui.label(
+                            egui::RichText::new(format!("{name}  ({size})")).small(),
+                        );
+                    }
+                }
             });
         });
     }
