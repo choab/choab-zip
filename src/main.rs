@@ -100,6 +100,13 @@ struct SevenRustZip {
     /// Type-to-find buffer, like Windows list views.
     typeahead: String,
     typeahead_at: Option<std::time::Instant>,
+
+    /// Where the primary button went down on the titlebar (pending move-vs-click).
+    titlebar_press: Option<egui::Pos2>,
+    /// We already handed the pointer over to the compositor for a window move.
+    titlebar_moving: bool,
+    /// We already handed the pointer over to the compositor for a window resize.
+    resizing: bool,
 }
 
 struct Preview {
@@ -170,6 +177,9 @@ impl SevenRustZip {
             focus: Pane::Files,
             typeahead: String::new(),
             typeahead_at: None,
+            titlebar_press: None,
+            titlebar_moving: false,
+            resizing: false,
         };
         me.refresh_dir();
         if let Some(a) = archive {
@@ -815,6 +825,9 @@ fn looks_like_archive(path: &Path) -> bool {
 // Rows are painted by hand rather than placed in an egui::Grid so that the
 // selection highlight covers the whole row, and so every click across the row
 // hits the same item. A Grid would only make the name cell clickable.
+
+/// Width reserved on the right of the titlebar for the window buttons.
+const BUTTON_BAR_W: f32 = 108.0;
 
 const ROW_H: f32 = 21.0;
 const ROW_ICON: f32 = 16.0;
@@ -2003,7 +2016,13 @@ impl SevenRustZip {
         let is_maximized = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
         let icons = Arc::clone(&self.icons);
 
-        ui.horizontal(|ui| {
+        // Note: the titlebar deliberately registers no click/drag-sensing widget.
+        // An interactive window move hands the pointer to the compositor
+        // (xdg_toplevel.move), which swallows the button release; egui would then
+        // believe the button is still held and ignore every later click until an
+        // Escape. So we detect press/travel/double-click ourselves and only use
+        // raw pointer state.
+        let bar = ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(8.0, 0.0);
 
             // Left: App icon and title
@@ -2024,18 +2043,9 @@ impl SevenRustZip {
                 );
             }
 
-            // Draggable space across the middle
+            // Spacer pushing the window buttons to the right.
             let avail = ui.available_size_before_wrap();
-            let button_bar_width = 105.0;
-            let drag_width = (avail.x - button_bar_width).max(20.0);
-            let (_drag_rect, drag_resp) =
-                ui.allocate_exact_size(egui::vec2(drag_width, 26.0), egui::Sense::click_and_drag());
-            if drag_resp.dragged() {
-                ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
-            }
-            if drag_resp.double_clicked() {
-                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!is_maximized));
-            }
+            ui.add_space((avail.x - BUTTON_BAR_W).max(12.0));
 
             // Right: Window controls (reduit, maximise, close) — enlarged to 20x20
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -2081,15 +2091,83 @@ impl SevenRustZip {
                 }
             });
         });
+
+        let row = bar.response.rect;
+        let drag_rect = egui::Rect::from_min_max(
+            row.left_top(),
+            egui::pos2((row.right() - BUTTON_BAR_W).max(row.left() + 40.0), row.bottom()),
+        );
+
+        self.titlebar_drag(ui.ctx(), drag_rect, is_maximized);
+    }
+
+    /// Own implementation of "drag the window by its titlebar".
+    ///
+    /// Started only after the pointer actually travels, so a double-click (which
+    /// toggles maximize) never degenerates into a pointer-grabbing move.
+    fn titlebar_drag(&mut self, ctx: &egui::Context, drag_rect: egui::Rect, is_maximized: bool) {
+        let (pointer_pos, primary_down, primary_pressed, primary_released, double_clicked) = ctx
+            .input(|i| {
+                (
+                    i.pointer.interact_pos(),
+                    i.pointer.primary_down(),
+                    i.pointer.primary_pressed(),
+                    i.pointer.primary_released(),
+                    i.pointer.button_double_clicked(egui::PointerButton::Primary),
+                )
+            });
+        let inside = pointer_pos.is_some_and(|p| drag_rect.contains(p));
+
+        if primary_pressed && inside {
+            self.titlebar_press = pointer_pos;
+            self.titlebar_moving = false;
+        }
+
+        if let (Some(start), Some(pos)) = (self.titlebar_press, pointer_pos) {
+            if primary_down && !self.titlebar_moving && pos.distance(start) > 5.0 {
+                self.titlebar_moving = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                release_pointer_to_compositor(ctx);
+            }
+        }
+
+        if primary_released || !primary_down {
+            self.titlebar_press = None;
+            self.titlebar_moving = false;
+        }
+
+        if double_clicked && inside && !self.titlebar_moving {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!is_maximized));
+        }
     }
 }
 
-fn handle_window_resize(ui: &mut egui::Ui, app_rect: egui::Rect) {
+/// The compositor takes ownership of the pointer for an interactive move or
+/// resize and never reports the button release back to us. Drop egui's stale
+/// pointer/drag bookkeeping, otherwise every subsequent click is swallowed
+/// until the user presses Escape (which aborts the phantom drag).
+fn release_pointer_to_compositor(ctx: &egui::Context) {
+    ctx.stop_dragging();
+    ctx.input_mut(|i| i.pointer = egui::PointerState::default());
+    // Repaint so the UI immediately drops hover/drag visuals instead of waiting
+    // for the next pointer motion event.
+    ctx.request_repaint();
+}
+
+fn handle_window_resize(ui: &mut egui::Ui, app_rect: egui::Rect, resizing: &mut bool) {
     let border_hit = 8.0;
     let outer_rect = app_rect.expand(border_hit);
     let inner_rect = app_rect.shrink(border_hit);
 
-    let Some(pointer_pos) = ui.ctx().pointer_latest_pos() else { return };
+    let Some(pointer_pos) = ui.ctx().pointer_latest_pos() else {
+        *resizing = false;
+        return;
+    };
+
+    if ui.input(|i| !i.pointer.any_down()) {
+        *resizing = false;
+    }
+
     if !outer_rect.contains(pointer_pos) || inner_rect.contains(pointer_pos) {
         return;
     }
@@ -2113,8 +2191,12 @@ fn handle_window_resize(ui: &mut egui::Ui, app_rect: egui::Rect) {
 
     if let Some(dir) = dir {
         ui.ctx().set_cursor_icon(cursor);
-        if ui.input(|i| i.pointer.button_down(egui::PointerButton::Primary)) {
+        // Only *start* a resize on a fresh press in the border, never by dragging
+        // into the border with the button already down.
+        if !*resizing && ui.input(|i| i.pointer.primary_pressed()) {
+            *resizing = true;
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::BeginResize(dir));
+            release_pointer_to_compositor(ui.ctx());
         }
     }
 }
@@ -2158,7 +2240,7 @@ impl eframe::App for SevenRustZip {
             ui.painter().add(key_shadow.as_shape(app_rect, corner_radius));
 
             // Edge resize interaction for borderless window
-            handle_window_resize(ui, app_rect);
+            handle_window_resize(ui, app_rect, &mut self.resizing);
         }
 
         // Fill background of main app window
