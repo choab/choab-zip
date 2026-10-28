@@ -1333,188 +1333,280 @@ def render_window_button(kind='close', size=256):
 # =============================================================
 # 14. FLAGSHIP APP ICON (512x512)
 # =============================================================
+def draw_text_centered(ctx, text, cx, baseline, fsize, color,
+                       weight=cairo.FONT_WEIGHT_BOLD, family="DejaVu Sans",
+                       letter_spacing=0.0, shadow=0.0):
+    """Draw horizontally centered text on a given baseline."""
+    ctx.select_font_face(family, cairo.FONT_SLANT_NORMAL, weight)
+    ctx.set_font_size(fsize)
+
+    def advance(ch):
+        return ctx.text_extents(ch).x_advance + letter_spacing
+
+    total = sum(advance(ch) for ch in text) - letter_spacing
+    x = cx - total / 2.0
+
+    for pass_i in range(2 if shadow > 0 else 1):
+        if pass_i == 0:
+            ctx.set_source_rgba(0, 0, 0, shadow)
+            dy = shadow * 0.55
+        else:
+            ctx.set_source_rgba(*color)
+            dy = 0.0
+        cx_pen = x
+        for ch in text:
+            ctx.move_to(cx_pen, baseline + dy)
+            ctx.show_text(ch)
+            cx_pen += advance(ch)
+
+
+def text_block_height(ctx, fsize):
+    ctx.select_font_face("DejaVu Sans", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
+    ctx.set_font_size(fsize)
+    ext = ctx.text_extents("zpy")
+    return ext.height
+
+
 def render_app_icon(size=512):
     surf, ctx = create_surface(size)
-    cx, cy = size/2.0, size/2.0
+    cx, cy = size / 2.0, size / 2.0
 
-    # Modern macOS / 2026 Squircle base
+    # --- Crimson squircle base -------------------------------------------
     bw = size * 0.88
     bh = size * 0.88
-    bx = cx - bw/2.0
-    by = cy - bh/2.0
+    bx = cx - bw / 2.0
+    by = cy - bh / 2.0
     br = size * 0.22
 
     # Drop shadow
-    shadow_pat = cairo.RadialGradient(cx, size*0.92, bw*0.3, cx, size*0.92, bw*0.75)
+    shadow_pat = cairo.RadialGradient(cx, size * 0.92, bw * 0.3, cx, size * 0.92, bw * 0.75)
     shadow_pat.add_color_stop_rgba(0, 0, 0, 0, 0.45)
     shadow_pat.add_color_stop_rgba(1, 0, 0, 0, 0.0)
     ctx.set_source(shadow_pat)
-    ctx.arc(cx, size*0.92, bw*0.75, 0, 2*math.pi)
+    ctx.arc(cx, size * 0.92, bw * 0.75, 0, 2 * math.pi)
     ctx.fill()
 
-    # Squircle background: Cosmic Dark Indigo / Navy / Violet
     bg_pat = cairo.LinearGradient(bx, by, bx + bw, by + bh)
-    bg_pat.add_color_stop_rgb(0.0, *hex_to_rgb('#1E1B4B')) # deep indigo
-    bg_pat.add_color_stop_rgb(0.5, *hex_to_rgb('#0F172A')) # dark slate
-    bg_pat.add_color_stop_rgb(1.0, *hex_to_rgb('#020617')) # cosmic black
+    bg_pat.add_color_stop_rgb(0.0, *hex_to_rgb('#6B0F26'))  # crimson
+    bg_pat.add_color_stop_rgb(0.5, *hex_to_rgb('#310816'))  # dark wine
+    bg_pat.add_color_stop_rgb(1.0, *hex_to_rgb('#0E0307'))  # near black
     ctx.set_source(bg_pat)
     round_rect(ctx, bx, by, bw, bh, br)
     ctx.fill()
 
-    # Ambient glow in top-left
-    glow_pat = cairo.RadialGradient(bx + bw*0.25, by + bh*0.25, 0, bx + bw*0.25, by + bh*0.25, bw*0.6)
-    glow_pat.add_color_stop_rgba(0.0, *hex_to_rgba('#6366F1', 0.25))
-    glow_pat.add_color_stop_rgba(1.0, *hex_to_rgba('#6366F1', 0.0))
+    # Warm crimson ambience, top-left
+    glow_pat = cairo.RadialGradient(bx + bw * 0.25, by + bh * 0.22, 0,
+                                    bx + bw * 0.25, by + bh * 0.22, bw * 0.65)
+    glow_pat.add_color_stop_rgba(0.0, *hex_to_rgba('#FB7185', 0.32))
+    glow_pat.add_color_stop_rgba(1.0, *hex_to_rgba('#FB7185', 0.0))
     ctx.set_source(glow_pat)
     round_rect(ctx, bx, by, bw, bh, br)
     ctx.fill()
 
-    # Luminous perimeter rim
+    # Luminous rim
     ctx.save()
     round_rect(ctx, bx, by, bw, bh, br)
     ctx.clip()
     rim_pat = cairo.LinearGradient(bx, by, bx, by + bh)
-    rim_pat.add_color_stop_rgba(0.0, 1, 1, 1, 0.40)
-    rim_pat.add_color_stop_rgba(0.3, *hex_to_rgba('#38BDF8', 0.25))
+    rim_pat.add_color_stop_rgba(0.0, 1, 1, 1, 0.42)
+    rim_pat.add_color_stop_rgba(0.3, *hex_to_rgba('#FB7185', 0.30))
     rim_pat.add_color_stop_rgba(1.0, 1, 1, 1, 0.05)
     ctx.set_source(rim_pat)
     ctx.set_line_width(size * 0.02)
-    round_rect(ctx, bx+1, by+1, bw-2, bh-2, br-1)
+    round_rect(ctx, bx + 1, by + 1, bw - 2, bh - 2, br - 1)
     ctx.stroke()
     ctx.restore()
 
-    # --- 3D Archive Capsule Centerpiece ---
-    cw = size * 0.60
-    ch = size * 0.64
-    cx_box = cx - cw/2.0
-    cy_box = cy - ch/2.0 + size*0.02
+    # --- Archive container (7-Zip style zipper body) ----------------------
+    cw = size * 0.62
+    ch = size * 0.66
+    cx_box = cx - cw / 2.0
+    cy_box = cy - ch / 2.0 + size * 0.02
     cr = size * 0.14
 
-    c_shad = cairo.RadialGradient(cx, cy_box + ch*0.8, cw*0.3, cx, cy_box + ch*0.8, cw*0.8)
-    c_shad.add_color_stop_rgba(0, 0, 0, 0, 0.6)
+    c_shad = cairo.RadialGradient(cx, cy_box + ch * 0.8, cw * 0.3, cx, cy_box + ch * 0.8, cw * 0.8)
+    c_shad.add_color_stop_rgba(0, 0, 0, 0, 0.65)
     c_shad.add_color_stop_rgba(1, 0, 0, 0, 0.0)
     ctx.set_source(c_shad)
-    ctx.arc(cx, cy_box + ch*0.8, cw*0.8, 0, 2*math.pi)
+    ctx.arc(cx, cy_box + ch * 0.8, cw * 0.8, 0, 2 * math.pi)
     ctx.fill()
 
     body_pat = cairo.LinearGradient(cx, cy_box, cx, cy_box + ch)
-    body_pat.add_color_stop_rgb(0.0, *hex_to_rgb('#475569'))
-    body_pat.add_color_stop_rgb(0.4, *hex_to_rgb('#1E293B'))
-    body_pat.add_color_stop_rgb(1.0, *hex_to_rgb('#0B0F19'))
+    body_pat.add_color_stop_rgb(0.0, *hex_to_rgb('#5A1B2B'))
+    body_pat.add_color_stop_rgb(0.40, *hex_to_rgb('#2C0C17'))
+    body_pat.add_color_stop_rgb(1.0, *hex_to_rgb('#0C0306'))
     ctx.set_source(body_pat)
     round_rect(ctx, cx_box, cy_box, cw, ch, cr)
     ctx.fill()
 
-    # Glowing compression bands
     ctx.save()
     round_rect(ctx, cx_box, cy_box, cw, ch, cr)
     ctx.clip()
 
+    # Crimson glowing compression bands
     b1_pat = cairo.LinearGradient(cx_box, 0, cx_box + cw, 0)
-    b1_pat.add_color_stop_rgba(0, *hex_to_rgba('#06B6D4', 0.2))
-    b1_pat.add_color_stop_rgba(0.5, *hex_to_rgba('#22D3EE', 0.9))
-    b1_pat.add_color_stop_rgba(1, *hex_to_rgba('#06B6D4', 0.2))
+    b1_pat.add_color_stop_rgba(0, *hex_to_rgba('#9F1239', 0.15))
+    b1_pat.add_color_stop_rgba(0.5, *hex_to_rgba('#FB7185', 1.0))
+    b1_pat.add_color_stop_rgba(1, *hex_to_rgba('#9F1239', 0.15))
     ctx.set_source(b1_pat)
-    round_rect(ctx, cx_box, cy_box + ch*0.20, cw, ch*0.07, ch*0.02)
+    for band_y in (0.185, 0.745):
+        round_rect(ctx, cx_box, cy_box + ch * band_y, cw, ch * 0.055, ch * 0.02)
+        ctx.fill()
+    # faint second line above each band for a machined look
+    ctx.set_source_rgba(1.0, 0.85, 0.88, 0.10)
+    for band_y in (0.165, 0.725):
+        round_rect(ctx, cx_box, cy_box + ch * band_y, cw, ch * 0.012, ch * 0.006)
+        ctx.fill()
+
+    # vertical crimson sheen across the body
+    body_sheen = cairo.LinearGradient(cx_box, 0, cx_box + cw, 0)
+    body_sheen.add_color_stop_rgba(0.0, *hex_to_rgba('#FB7185', 0.0))
+    body_sheen.add_color_stop_rgba(0.42, *hex_to_rgba('#FB7185', 0.10))
+    body_sheen.add_color_stop_rgba(0.58, *hex_to_rgba('#FB7185', 0.10))
+    body_sheen.add_color_stop_rgba(1.0, *hex_to_rgba('#FB7185', 0.0))
+    ctx.set_source(body_sheen)
+    round_rect(ctx, cx_box, cy_box, cw, ch, cr)
     ctx.fill()
 
-    round_rect(ctx, cx_box, cy_box + ch*0.73, cw, ch*0.07, ch*0.02)
-    ctx.fill()
-
-    hi = cairo.LinearGradient(cx, cy_box, cx, cy_box + ch*0.4)
-    hi.add_color_stop_rgba(0, 1, 1, 1, 0.70)
+    hi = cairo.LinearGradient(cx, cy_box, cx, cy_box + ch * 0.4)
+    hi.add_color_stop_rgba(0, 1, 1, 1, 0.55)
     hi.add_color_stop_rgba(1, 1, 1, 1, 0.0)
     ctx.set_source(hi)
     ctx.set_line_width(cw * 0.05)
-    round_rect(ctx, cx_box+1, cy_box+1, cw-2, ch-2, cr-1)
+    round_rect(ctx, cx_box + 1, cy_box + 1, cw - 2, ch - 2, cr - 1)
     ctx.stroke()
     ctx.restore()
 
-    # Vertical gold zipper track
+    # Vertical zipper track with metallic teeth
     zw = cw * 0.18
-    zx = cx - zw/2.0
+    zx = cx - zw / 2.0
     zy = cy_box + ch * 0.06
     zh = ch * 0.88
 
-    ctx.set_source_rgb(*hex_to_rgb('#020617'))
-    round_rect(ctx, zx, zy, zw, zh, zw*0.3)
+    ctx.set_source_rgb(*hex_to_rgb('#0A0305'))
+    round_rect(ctx, zx, zy, zw, zh, zw * 0.3)
     ctx.fill()
 
-    ctx.set_source_rgb(*hex_to_rgb('#FDE68A'))
+    ctx.set_source_rgb(*hex_to_rgb('#FECDD3'))
     ctx.set_line_width(size * 0.016)
     teeth = 13
     for i in range(teeth):
         ty = zy + (i + 0.5) * (zh / teeth)
         if i % 2 == 0:
-            ctx.move_to(zx + zw*0.1, ty)
-            ctx.line_to(zx + zw*0.65, ty)
+            ctx.move_to(zx + zw * 0.1, ty)
+            ctx.line_to(zx + zw * 0.65, ty)
         else:
-            ctx.move_to(zx + zw*0.35, ty)
-            ctx.line_to(zx + zw*0.9, ty)
+            ctx.move_to(zx + zw * 0.35, ty)
+            ctx.line_to(zx + zw * 0.9, ty)
         ctx.stroke()
 
-    # Golden Zipper Slider & Pull Tab
-    pw = cw * 0.40
-    ph = ch * 0.44
-    px = cx - pw/2.0
-    py = cy - ph*0.35
+    # --- Crimson zipper pull tab with "rust" over "zip" -------------------
+    pw = cw * 0.56
+    ph = ch * 0.545
+    px = cx - pw / 2.0
+    py = cy - ph / 2.0 - size * 0.01
+    pr = pw * 0.20
 
-    p_shad = cairo.RadialGradient(cx, py + ph*0.6, pw*0.3, cx, py + ph*0.6, pw*0.9)
-    p_shad.add_color_stop_rgba(0, 0, 0, 0, 0.55)
+    p_shad = cairo.RadialGradient(cx, py + ph * 0.62, pw * 0.3, cx, py + ph * 0.62, pw * 0.95)
+    p_shad.add_color_stop_rgba(0, 0, 0, 0, 0.60)
     p_shad.add_color_stop_rgba(1, 0, 0, 0, 0.0)
     ctx.set_source(p_shad)
-    ctx.arc(cx, py + ph*0.6, pw*0.9, 0, 2*math.pi)
+    ctx.arc(cx, py + ph * 0.62, pw * 0.95, 0, 2 * math.pi)
     ctx.fill()
 
+    # Brushed crimson metal
     g_pat = cairo.LinearGradient(cx, py, cx, py + ph)
-    g_pat.add_color_stop_rgb(0.0, *hex_to_rgb('#FEF08A')) # bright gold
-    g_pat.add_color_stop_rgb(0.4, *hex_to_rgb('#F59E0B')) # warm amber
-    g_pat.add_color_stop_rgb(1.0, *hex_to_rgb('#92400E')) # deep bronze
+    g_pat.add_color_stop_rgb(0.0, *hex_to_rgb('#FB7185'))
+    g_pat.add_color_stop_rgb(0.22, *hex_to_rgb('#E11D48'))
+    g_pat.add_color_stop_rgb(0.60, *hex_to_rgb('#9F1239'))
+    g_pat.add_color_stop_rgb(1.0, *hex_to_rgb('#5C0A1C'))
     ctx.set_source(g_pat)
-    round_rect(ctx, px, py, pw, ph, pw*0.25)
+    round_rect(ctx, px, py, pw, ph, pr)
     ctx.fill()
 
+    # Inner bevel: soft dark ring + top specular
     ctx.save()
-    round_rect(ctx, px, py, pw, ph, pw*0.25)
+    round_rect(ctx, px, py, pw, ph, pr)
     ctx.clip()
-    t_hi = cairo.LinearGradient(cx, py, cx, py + ph*0.3)
-    t_hi.add_color_stop_rgba(0, 1, 1, 1, 0.8)
+    t_hi = cairo.LinearGradient(cx, py, cx, py + ph * 0.34)
+    t_hi.add_color_stop_rgba(0, 1, 1, 1, 0.50)
     t_hi.add_color_stop_rgba(1, 1, 1, 1, 0.0)
     ctx.set_source(t_hi)
-    ctx.set_line_width(pw * 0.08)
-    round_rect(ctx, px+1, py+1, pw-2, ph-2, pw*0.25 - 1)
-    ctx.stroke()
-    ctx.restore()
-
-    # Stamped stylized '7' on upper half of pull tab
-    ctx.save()
-    seven_y = py + ph * 0.16
-    ctx.set_line_width(pw * 0.15)
-    ctx.set_line_cap(cairo.LINE_CAP_ROUND)
-    ctx.set_line_join(cairo.LINE_JOIN_ROUND)
-    s_off = size * 0.008
-
-    # 7 shadow
-    ctx.set_source_rgba(0, 0, 0, 0.35)
-    ctx.move_to(cx - pw*0.24, seven_y + s_off)
-    ctx.line_to(cx + pw*0.24, seven_y + s_off)
-    ctx.line_to(cx - pw*0.05, seven_y + ph*0.42 + s_off)
+    ctx.set_line_width(pw * 0.055)
+    round_rect(ctx, px + 1, py + 1, pw - 2, ph - 2, pr - 1)
     ctx.stroke()
 
-    # 7 white glyph
-    ctx.set_source_rgba(1, 1, 1, 0.98)
-    ctx.move_to(cx - pw*0.24, seven_y)
-    ctx.line_to(cx + pw*0.24, seven_y)
-    ctx.line_to(cx - pw*0.05, seven_y + ph*0.42)
-    ctx.stroke()
-    ctx.restore()
-
-    # Pull tab eyelet hole at bottom (separated cleanly from '7')
-    ctx.set_source_rgb(*hex_to_rgb('#1E293B'))
-    ctx.arc(cx, py + ph*0.78, pw*0.14, 0, 2*math.pi)
+    # Engraved plate behind the lettering
+    inset = pw * 0.10
+    plate_top = py + ph * 0.12
+    plate_h = ph * 0.62
+    plate_pat = cairo.LinearGradient(cx, plate_top, cx, plate_top + plate_h)
+    plate_pat.add_color_stop_rgba(0.0, *hex_to_rgba('#4C0519', 0.72))
+    plate_pat.add_color_stop_rgba(1.0, *hex_to_rgba('#2B040D', 0.62))
+    ctx.set_source(plate_pat)
+    round_rect(ctx, px + inset, plate_top, pw - inset * 2, plate_h, pw * 0.09)
     ctx.fill()
+    ctx.set_source_rgba(1, 1, 1, 0.18)
+    ctx.set_line_width(size * 0.004)
+    round_rect(ctx, px + inset, plate_top, pw - inset * 2, plate_h, pw * 0.09)
+    ctx.stroke()
+    ctx.restore()
+
+    # Lettering: "rust" (small, airy) over "zip" (bold)
+    rust_size = ph * 0.175
+    zip_size = ph * 0.365
+    rust_h = text_block_height(ctx, rust_size)
+    zip_h = text_block_height(ctx, zip_size)
+    gap = ph * 0.045
+    block_h = rust_h + gap + zip_h
+    block_top = plate_top + (plate_h - block_h) / 2.0
+
+    rust_baseline = block_top + rust_size * 0.80
+    zip_baseline = rust_baseline + gap + zip_h * 0.86
+
+    draw_text_centered(ctx, "rust", cx, rust_baseline, rust_size,
+                       (1.0, 0.93, 0.94, 0.95), letter_spacing=pw * 0.028,
+                       shadow=0.55)
+    draw_text_centered(ctx, "zip", cx, zip_baseline, zip_size,
+                       (1.0, 1.0, 1.0, 0.99), letter_spacing=pw * 0.012,
+                       shadow=0.55)
+
+    # Specular sheen over the lettering plate
+    ctx.save()
+    round_rect(ctx, px, py, pw, ph, pr)
+    ctx.clip()
+    sheen = cairo.LinearGradient(px, py, px + pw * 0.7, py + ph)
+    sheen.add_color_stop_rgba(0.0, 1, 1, 1, 0.20)
+    sheen.add_color_stop_rgba(0.32, 1, 1, 1, 0.04)
+    sheen.add_color_stop_rgba(1.0, 1, 1, 1, 0.0)
+    ctx.set_source(sheen)
+    round_rect(ctx, px, py, pw, ph, pr)
+    ctx.fill()
+    ctx.restore()
+
+    # Pull tab outline
+    ctx.set_source_rgba(0, 0, 0, 0.30)
+    ctx.set_line_width(size * 0.006)
+    round_rect(ctx, px, py, pw, ph, pr)
+    ctx.stroke()
+
+    # Eyelet hole
+    ctx.set_source_rgb(*hex_to_rgb('#200508'))
+    ctx.arc(cx, py + ph * 0.865, pw * 0.075, 0, 2 * math.pi)
+    ctx.fill()
+    ctx.set_source_rgba(1, 1, 1, 0.30)
+    ctx.set_line_width(size * 0.004)
+    ctx.arc(cx, py + ph * 0.865, pw * 0.075, math.pi, 2 * math.pi)
+    ctx.stroke()
+
+    # Container outline on top of everything
+    ctx.set_source_rgba(0, 0, 0, 0.28)
+    ctx.set_line_width(size * 0.005)
+    round_rect(ctx, cx_box, cy_box, cw, ch, cr)
+    ctx.stroke()
 
     return surf
+
 
 def generate_all():
     assets_icons = 'assets/icons'
