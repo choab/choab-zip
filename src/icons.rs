@@ -2,8 +2,8 @@ use eframe::egui;
 use std::sync::Arc;
 
 pub struct Icons {
-    /// Flagship application icon, used in the in-app titlebar.
-    pub app_icon: egui::TextureHandle,
+    /// The "7" badge cut from the project logo (in-app titlebar).
+    pub app_mark: egui::TextureHandle,
     pub add: egui::TextureHandle,
     pub extract: egui::TextureHandle,
     pub test: egui::TextureHandle,
@@ -35,7 +35,7 @@ fn load(ctx: &egui::Context, name: &str, bytes: &[u8]) -> egui::TextureHandle {
 impl Icons {
     pub fn new(ctx: &egui::Context) -> Arc<Self> {
         Arc::new(Self {
-            app_icon: load(ctx, "icon_app", include_bytes!("../assets/icon64.png")),
+            app_mark: load(ctx, "icon_app_mark", include_bytes!("../assets/icons/app_mark.png")),
             add: load(ctx, "icon_add", include_bytes!("../assets/icons/add.png")),
             extract: load(ctx, "icon_extract", include_bytes!("../assets/icons/extract.png")),
             test: load(ctx, "icon_test", include_bytes!("../assets/icons/test.png")),

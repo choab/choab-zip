@@ -2031,7 +2031,7 @@ impl SevenRustZip {
             ui.spacing_mut().item_spacing = egui::vec2(8.0, 0.0);
 
             // Left: App icon and title
-            ui.add(egui::Image::new(&icons.app_icon).fit_to_exact_size(egui::vec2(22.0, 22.0)));
+            ui.add(egui::Image::new(&icons.app_mark).fit_to_exact_size(egui::vec2(22.0, 22.0)));
             ui.label(
                 egui::RichText::new("7rust-zip")
                     .strong()

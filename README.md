@@ -57,8 +57,13 @@ that a given codec works on your machine.
 - `src/engine.rs` — format detection, listing, extract, create. All archive
   logic lives here and is UI-agnostic, so it can be reused or tested alone.
 - `src/main.rs` — the egui front-end (panels, browser, worker threads).
-- `assets/icon.png` — window icon, embedded with `include_bytes!`.
+- `assets/icon.png` — window/launcher icon, embedded with `include_bytes!`.
+  Generated from the hand-made logo `assets/7rz.logo.png`.
 - `assets/7rust-zip.desktop` — launcher entry for the application menu.
+- `scripts/make_logo_icons.py` — derives the app icon (full logo) and the
+  titlebar/archive-row "7" badge from `assets/7rz.logo.png`.
+- `scripts/generate_all_icons.py` — draws the toolbar, row and window-control
+  icon set (Pycairo) into `assets/icons/`.
 
 ## Icon guidance (IMPORTANT)
 
