@@ -1,6 +1,6 @@
 [package]
 name = "rustzip7"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Native, 7-Zip-style archiver for Linux — pure Rust"
 

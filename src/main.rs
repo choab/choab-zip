@@ -1,8 +1,8 @@
 //! 7rust-zip — a native, 7-Zip-style archiver for Linux.
 //!
 //! Pure Rust: sevenz-rust2 for 7z, `zip` for zip, `tar` + codecs for tarballs,
-//! egui for the UI. No Wine, no Qt, no `7z` subprocess, and no external
-//! launcher: archives can be browsed and files previewed in-app.
+//! egui for the UI. No Wine, no Qt, no `7z` subprocess. Text files are
+//! previewed in-app; other types are handed to the desktop's default app.
 
 mod engine;
 mod icons;
@@ -18,9 +18,31 @@ const VIEW_LIMIT: u64 = 8 * 1024 * 1024;
 /// Upper bound on bytes rendered as text (egui chokes on huge strings).
 const RENDER_LIMIT: usize = 400_000;
 
+/// Extensions that the desktop can present better than a text viewer.
+/// Everything else is sniffed: small text opens in-app, binary is delegated.
+const EXTERNAL_EXTS: &[&str] = &[
+    // Documents
+    "pdf", "djvu", "djv", "epub", "mobi", "azw", "azw3", "fb2", "cbz", "cbr",
+    "doc", "docx", "odt", "rtf", "xls", "xlsx", "ods", "ppt", "pptx", "odp",
+    // Images
+    "png", "jpg", "jpeg", "gif", "bmp", "webp", "tif", "tiff", "svg", "ico", "heic",
+    "heif", "avif", "psd", "xcf", "raw", "cr2", "nef", "dng",
+    // Audio / video
+    "mp3", "flac", "wav", "ogg", "oga", "opus", "m4a", "aac", "wma", "mid", "midi",
+    "mp4", "m4v", "mkv", "webm", "avi", "mov", "wmv", "flv", "mpg", "mpeg", "ts",
+    "m2ts", "ogv", "3gp",
+    // Fonts and desktop formats
+    "ttf", "otf", "woff", "woff2", "desktop", "torrent", "iso", "img",
+];
+
 enum Msg {
     Entries(PathBuf, Vec<engine::Entry>),
-    Preview(Result<Vec<u8>, String>, String),
+    Preview(Result<String, String>, String),
+    External {
+        key: String,
+        name: String,
+        result: Result<(), String>,
+    },
     Done(String, bool),
     Verified(usize, Vec<String>),
 }
@@ -110,9 +132,12 @@ struct SevenRustZip {
 }
 
 struct Preview {
+    /// Identifies the pending load, so stale worker results are ignored.
+    key: String,
     name: String,
     method: Option<String>,
-    bytes: Option<Vec<u8>>,
+    size: u64,
+    text: Option<String>,
     error: Option<String>,
     loading: bool,
 }
@@ -183,7 +208,7 @@ impl SevenRustZip {
         };
         me.refresh_dir();
         if let Some(a) = archive {
-            me.open_archive(a);
+            me.open_path(a);
         }
         me
     }
@@ -287,9 +312,39 @@ impl SevenRustZip {
 
     // --------------------------------------------------------------- archive
 
+    fn open_path(&mut self, path: PathBuf) {
+        if looks_like_archive(&path) {
+            self.open_archive(path);
+            return;
+        }
+        let name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.display().to_string());
+        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        if is_external_name(&name) || size > VIEW_LIMIT {
+            self.open_system(&path);
+        } else {
+            self.start_preview_file(&path);
+        }
+    }
+
+    /// Hand a real file to the desktop's default application.
+    fn open_system(&mut self, path: &Path) {
+        let name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.display().to_string());
+        self.preview = None;
+        match system_open(path) {
+            Ok(()) => self.status = format!("Opened {name} with the system default app"),
+            Err(e) => self.status = format!("Could not open {name}: {e}"),
+        }
+    }
+
     fn open_archive(&mut self, path: PathBuf) {
         if !looks_like_archive(&path) {
-            self.start_preview_file(&path);
+            self.open_path(path);
             return;
         }
         self.busy = true;
@@ -424,84 +479,100 @@ impl SevenRustZip {
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| path.display().to_string());
         let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        let key = path.to_string_lossy().to_string();
+
         if size > VIEW_LIMIT {
-            self.preview = Some(Preview {
-                name,
-                method: None,
-                bytes: None,
-                error: Some(format!(
-                    "File is {} — too large to preview (limit {})",
-                    human(size),
-                    human(VIEW_LIMIT)
-                )),
-                loading: false,
-            });
+            self.open_system(path);
             return;
         }
-        self.preview = Some(Preview {
-            name,
-            method: None,
-            bytes: None,
-            error: None,
-            loading: true,
-        });
+
         match std::fs::read(path) {
-            Ok(b) => {
-                if let Some(p) = &mut self.preview {
-                    p.bytes = Some(b);
-                    p.loading = false;
+            Ok(bytes) => match as_text(&bytes) {
+                Some(text) => {
+                    self.preview = Some(Preview {
+                        key,
+                        name,
+                        method: None,
+                        size,
+                        text: Some(text),
+                        error: None,
+                        loading: false,
+                    });
                 }
-            }
+                // Not text after all — let the desktop deal with it.
+                None => self.open_system(path),
+            },
             Err(e) => {
-                if let Some(p) = &mut self.preview {
-                    p.error = Some(e.to_string());
-                    p.loading = false;
-                }
+                self.preview = Some(Preview {
+                    key,
+                    name,
+                    method: None,
+                    size,
+                    text: None,
+                    error: Some(e.to_string()),
+                    loading: false,
+                });
             }
         }
     }
 
     fn start_preview_entry(&mut self, entry_path: String) {
         let Some(arc) = self.archive.clone() else { return };
-        let size = self
-            .entries
-            .iter()
-            .find(|e| e.path == entry_path)
-            .map(|e| e.size)
-            .unwrap_or(0);
+        let entry = self.entries.iter().find(|e| e.path == entry_path);
+        let size = entry.map(|e| e.size).unwrap_or(0);
+        let method = entry.and_then(|e| e.method.clone());
         let name = entry_path.rsplit('/').next().unwrap_or(&entry_path).to_string();
-        let method = self
-            .entries
-            .iter()
-            .find(|e| e.path == entry_path)
-            .and_then(|e| e.method.clone());
+        let key = entry_path.clone();
 
-        if size > VIEW_LIMIT {
-            self.preview = Some(Preview {
-                name,
-                method: method.clone(),
-                bytes: None,
-                error: Some(format!(
-                    "Entry is {} — too large to preview (limit {})",
-                    human(size),
-                    human(VIEW_LIMIT)
-                )),
-                loading: false,
+        // PDFs, media, images, etc. must go through the OS. Archives have no
+        // real path to hand over, so decode the entry to a temporary file first.
+        if is_external_name(&name) || size > VIEW_LIMIT {
+            self.preview = None;
+            self.status = format!("Extracting {name} for the system app…");
+            let tx = self.tx.clone();
+            let display = name.clone();
+            std::thread::spawn(move || {
+                let result = engine::read_entry(&arc, &entry_path)
+                    .map_err(|e| e.to_string())
+                    .and_then(|bytes| open_bytes_externally(&entry_path, &bytes));
+                let _ = tx.send(Msg::External {
+                    key,
+                    name: display,
+                    result,
+                });
             });
             return;
         }
 
         self.preview = Some(Preview {
-            name,
+            key,
+            name: name.clone(),
             method,
-            bytes: None,
+            size,
+            text: None,
             error: None,
             loading: true,
         });
         let tx = self.tx.clone();
-        std::thread::spawn(move || {
-            let r = engine::read_entry(&arc, &entry_path).map_err(|e| e.to_string());
-            let _ = tx.send(Msg::Preview(r, entry_path));
+        let key = entry_path.clone();
+        std::thread::spawn(move || match engine::read_entry(&arc, &entry_path) {
+            Ok(bytes) => match as_text(&bytes) {
+                Some(text) => {
+                    let _ = tx.send(Msg::Preview(Ok(text), key));
+                }
+                // Unknown extension and not text: extract a temp copy and hand it over.
+                None => {
+                    let result = open_bytes_externally(&entry_path, &bytes);
+                    let _ = tx.send(Msg::External {
+                        key,
+                        name,
+                        result,
+                    });
+                }
+            },
+            Err(e) => {
+                let _ = tx.send(Msg::Preview(Err(e.to_string()), key));
+            }
         });
     }
 
@@ -620,21 +691,25 @@ impl SevenRustZip {
                     }
                     self.busy = false;
                 }
-                Msg::Preview(r, entry_path) => {
+                Msg::Preview(r, key) => {
                     if let Some(p) = &mut self.preview {
-                        let still = entry_path
-                            .rsplit('/')
-                            .next()
-                            .map(|n| n == p.name)
-                            .unwrap_or(false);
-                        if still {
+                        if p.key == key {
                             match r {
-                                Ok(b) => p.bytes = Some(b),
+                                Ok(text) => p.text = Some(text),
                                 Err(e) => p.error = Some(e),
                             }
                             p.loading = false;
                         }
                     }
+                }
+                Msg::External { key, name, result } => {
+                    if self.preview.as_ref().map(|p| p.key == key).unwrap_or(false) {
+                        self.preview = None;
+                    }
+                    self.status = match result {
+                        Ok(()) => format!("Extracted {name} to a temp folder and opened it"),
+                        Err(e) => format!("Could not open {name}: {e}"),
+                    };
                 }
                 Msg::Verified(n, errs) => {
                     self.busy = false;
@@ -710,7 +785,7 @@ impl SevenRustZip {
                             if r.is_dir {
                                 self.enter_dir(p);
                             } else {
-                                self.open_archive(p);
+                                self.open_path(p);
                             }
                         }
                     }
@@ -819,6 +894,52 @@ fn looks_like_archive(path: &Path) -> bool {
         || head.starts_with(b"BZh ")
         || head.starts_with(&[0x28, 0xB5, 0x2F, 0xFD])
         || head.starts_with(b"Rar!")
+}
+
+/// File types that should be handed to the desktop rather than decoded here.
+fn is_external_name(name: &str) -> bool {
+    name.to_ascii_lowercase()
+        .rsplit_once('.')
+        .map(|(_, ext)| EXTERNAL_EXTS.contains(&ext))
+        .unwrap_or(false)
+}
+
+/// Spawn the desktop's default handler. No shell, no output redirects: this
+/// runs only when the user explicitly opens a file.
+fn system_open(path: &Path) -> Result<(), String> {
+    let mut last = String::new();
+    for (prog, args) in [
+        ("xdg-open", &[][..]),
+        ("gio", &["open"][..]),
+        ("kde-open", &[][..]),
+    ] {
+        match std::process::Command::new(prog).args(args).arg(path).spawn() {
+            Ok(_) => return Ok(()),
+            Err(e) => last = format!("{prog}: {e}"),
+        }
+    }
+    Err(format!("no system file opener found ({last})"))
+}
+
+/// An archive entry has no path of its own. Write it to a temp copy with its
+/// original file name (so the desktop picks the right app), then open that.
+fn open_bytes_externally(entry_path: &str, bytes: &[u8]) -> Result<(), String> {
+    let base = Path::new(entry_path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("archive-file");
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir()
+        .join("7rust-zip")
+        .join(format!("{}-{stamp}", std::process::id()));
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let out = dir.join(base);
+    std::fs::write(&out, bytes).map_err(|e| e.to_string())?;
+    system_open(&out)
 }
 
 // -- list geometry -----------------------------------------------------------
@@ -1136,50 +1257,25 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
-fn as_text(bytes: &[u8]) -> Option<String> {
-    let n = bytes.len().min(RENDER_LIMIT);
-    let slice = &bytes[..n];
-    let bad = slice
+fn looks_like_text(bytes: &[u8]) -> bool {
+    let n = bytes.len().min(64 * 1024);
+    !bytes[..n]
         .iter()
-        .take(4096)
-        .filter(|b| **b == 0 || (**b < 0x09))
-        .count();
-    if bad > 0 {
+        .any(|b| *b == 0 || *b < 0x09 || (*b > 0x0d && *b < 0x20))
+}
+
+fn as_text(bytes: &[u8]) -> Option<String> {
+    if !looks_like_text(bytes) {
         return None;
     }
+    let n = bytes.len().min(RENDER_LIMIT);
+    let slice = &bytes[..n];
     let s = String::from_utf8_lossy(slice).to_string();
     Some(if bytes.len() > n {
         format!("{s}\n\n… truncated at {} (of {})", human(n as u64), human(bytes.len() as u64))
     } else {
         s
     })
-}
-
-fn hex_dump(bytes: &[u8]) -> String {
-    let n = bytes.len().min(RENDER_LIMIT / 4);
-    let mut out = String::with_capacity(n * 4);
-    for (i, chunk) in bytes[..n].chunks(16).enumerate() {
-        out.push_str(&format!("{:08X}  ", i * 16));
-        for b in chunk {
-            out.push_str(&format!("{b:02X} "));
-        }
-        for _ in chunk.len()..16 {
-            out.push_str("   ");
-        }
-        out.push(' ');
-        for b in chunk {
-            out.push(if b.is_ascii_graphic() || *b == b' ' {
-                *b as char
-            } else {
-                '.'
-            });
-        }
-        out.push('\n');
-    }
-    if bytes.len() > n {
-        out.push_str(&format!("… truncated at {}\n", human(n as u64)));
-    }
-    out
 }
 
 // ----------------------------------------------------------------- UI parts
@@ -1532,7 +1628,7 @@ impl SevenRustZip {
                         if r.is_dir {
                             self.enter_dir(p);
                         } else {
-                            self.open_archive(p);
+                            self.open_path(p);
                         }
                     }
                 }
@@ -1698,12 +1794,8 @@ impl SevenRustZip {
     }
 
     fn ui_preview(&mut self, ui: &mut egui::Ui) {
+        let icons = Arc::clone(&self.icons);
         let Some(p) = &self.preview else { return };
-        let name = p.name.clone();
-        let loading = p.loading;
-        let error = p.error.clone();
-        let bytes = p.bytes.clone();
-        let method = p.method.clone();
 
         let mut close = false;
         egui::Panel::right("preview")
@@ -1713,13 +1805,13 @@ impl SevenRustZip {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("Viewer:").strong());
                     ui.label(
-                        egui::RichText::new(&name)
+                        egui::RichText::new(&p.name)
                             .monospace()
                             .color(egui::Color32::from_rgb(0, 90, 160)),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let btn = egui::Button::image(
-                            egui::Image::new(&self.icons.window_close)
+                            egui::Image::new(&icons.window_close)
                                 .fit_to_exact_size(egui::vec2(14.0, 14.0)),
                         )
                         .frame(false);
@@ -1728,7 +1820,7 @@ impl SevenRustZip {
                         }
                     });
                 });
-                if let Some(m) = &method {
+                if let Some(m) = &p.method {
                     ui.label(
                         egui::RichText::new(format!("codec: {m}"))
                             .small()
@@ -1737,63 +1829,38 @@ impl SevenRustZip {
                 }
                 ui.separator();
 
-                if loading {
+                if p.loading {
                     ui.horizontal(|ui| {
                         ui.spinner();
                         ui.label("Decoding…");
                     });
                     return;
                 }
-                if let Some(e) = error {
+                if let Some(e) = &p.error {
                     ui.label(
                         egui::RichText::new(e).color(egui::Color32::from_rgb(170, 40, 40)),
                     );
                     return;
                 }
-                let Some(bytes) = bytes else { return };
                 ui.label(
-                    egui::RichText::new(human(bytes.len() as u64))
+                    egui::RichText::new(human(p.size))
                         .small()
                         .color(egui::Color32::from_gray(120)),
                 );
-                match as_text(&bytes) {
-                    Some(text) => {
-                        egui::ScrollArea::both()
-                            .id_salt("preview_text")
-                            .auto_shrink([false, false])
-                            .show(ui, |ui| {
-                                ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(text)
-                                            .monospace()
-                                            .size(12.0),
-                                    )
-                                    .selectable(true),
-                                );
-                            });
-                    }
-                    None => {
-                        ui.label(
-                            egui::RichText::new("Binary — showing hex")
-                                .small()
-                                .italics()
-                                .color(egui::Color32::from_gray(120)),
+                let Some(text) = &p.text else { return };
+                egui::ScrollArea::both()
+                    .id_salt("preview_text")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(text)
+                                    .monospace()
+                                    .size(12.0),
+                            )
+                            .selectable(true),
                         );
-                        egui::ScrollArea::both()
-                            .id_salt("preview_hex")
-                            .auto_shrink([false, false])
-                            .show(ui, |ui| {
-                                ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(hex_dump(&bytes))
-                                            .monospace()
-                                            .size(12.0),
-                                    )
-                                    .selectable(true),
-                                );
-                            });
-                    }
-                }
+                    });
             });
 
         if close {
@@ -2393,4 +2460,27 @@ fn main() -> eframe::Result<()> {
         opts,
         Box::new(move |cc| Ok(Box::new(SevenRustZip::new(cc, start)))),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn routes_known_desktop_types() {
+        assert!(is_external_name("manual.PDF"));
+        assert!(is_external_name("clip.mp4"));
+        assert!(is_external_name("photo.jpeg"));
+        assert!(!is_external_name("notes.txt"));
+        assert!(!is_external_name("Makefile"));
+    }
+
+    #[test]
+    fn detects_text_and_binary() {
+        assert!(looks_like_text(b"hello\nworld\n"));
+        assert!(!looks_like_text(b"\x7fELF\x02\x01\x01\x00"));
+        assert!(!looks_like_text(&[0, 1, 2, 3]));
+        assert_eq!(as_text(b"hello").as_deref(), Some("hello"));
+        assert!(as_text(&[0, 0, 0]).is_none());
+    }
 }

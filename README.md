@@ -4,6 +4,10 @@ A native, 7-Zip-style archiver for Linux, written in pure Rust.
 
 No Wine, no Qt, no `7z` subprocess. One ~11 MB self-contained binary.
 
+Archive browsing and text preview are native. Files the desktop handles
+better (PDF, images, audio, video, office documents) are opened with the
+system default application.
+
 ## Why
 
 7-Zip's interface is clean and predictable; most Linux archive managers are
@@ -17,7 +21,8 @@ is a fast, native two-pane file browser in that style. That's all this is.
 | 7z / zip / tar / tar.gz / tar.xz / tar.bz2 / tar.zst | list, extract, create |
 | gz / xz / bz2 single-file | extract |
 | **Browse inside archives** (folders, `..`, nested dirs) | done |
-| **Built-in file viewer** (text + hex, in-app) | done |
+| **Built-in viewer** (small text files, in-app) | done |
+| **System default app** for PDFs, media, images, office docs | done |
 | **Integrity test** with CRC verification | done |
 | Light theme, Win32-like | done |
 | Two-pane layout, like 7zFM | done |
@@ -28,11 +33,15 @@ is a fast, native two-pane file browser in that style. That's all this is.
 | AES-256 encrypted 7z | engine ready, no UI yet |
 | RAR | read-only listings; unRAR licence forbids reuse |
 
-### No external programs — by design
+### External apps only for non-text files
 
-The app **never** launches another program. Double-clicking a non-archive does
-not call `xdg-open`; it opens the built-in viewer instead. `grep -r xdg-open
-src/` returns nothing, and there is no `Command::new` anywhere in the source.
+Archive work stays native: no `7z` subprocess, no external archiver. The
+built-in viewer is reserved for small text files (up to 8 MB). When you open
+a PDF, image, video, audio file, office document, or an unknown binary, the
+app asks the desktop to open it (`xdg-open`, with `gio open` / `kde-open` as
+fallbacks). Files inside archives are decoded to a temporary copy first,
+because the desktop needs a real path. Temporary copies live under
+`$TMPDIR/7rust-zip/` and are left for the OS to clean up.
 
 ## Build
 
@@ -90,7 +99,7 @@ entry, the 256/512 px icons and AppStream metadata.
 
 ```bash
 ./scripts/package-deb.sh                 # cargo build --release + package
-sudo apt install ./dist/7rust-zip_0.1.0_amd64.deb
+sudo apt install ./dist/7rust-zip_0.1.1_amd64.deb
 ```
 
 Requirements are derived from the binary's own shared objects
@@ -178,8 +187,10 @@ Taken from the actual 7-Zip source; see [docs-7zip-behavior.md](docs-7zip-behavi
 
 - **Double-click a folder** → enter it.
 - **Double-click an archive** → open it in the right pane.
-- **Double-click a file inside an archive** → preview it in the built-in viewer.
-- **Double-click a plain file on disk** → preview it (never handed to another app).
+- **Double-click a text file inside an archive** → preview it in the built-in viewer.
+- **Double-click a PDF, image, video, etc. inside an archive** → extract a temp copy and open it with the system app.
+- **Double-click a plain text file on disk** → preview it in the built-in viewer.
+- **Double-click any other file on disk** → open it with the system default app.
 - **Backspace / Ctrl+PgUp** → go up one level.
 - **Enter / Ctrl+PgDn** → open the focused item.
 - **Arrows / Home / End** → move the selection.

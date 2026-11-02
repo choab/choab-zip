@@ -38,11 +38,11 @@ fi
 
 echo "==> staging ${STAGE}"
 install -Dm755 "$BIN"                      "$STAGE/usr/bin/$PKG"
-install -Dm644 assets/7rust-zip.desktop    "$STAGE/usr/share/applications/$PKG.desktop"
+install -Dm644 assets/7rust-zip.desktop    "$STAGE/usr/share/applications/io.github.rustzip.SevenRustZip.desktop"
 install -Dm644 assets/icon.png             "$STAGE/usr/share/icons/hicolor/256x256/apps/$PKG.png"
 install -Dm644 assets/icon512.png          "$STAGE/usr/share/icons/hicolor/512x512/apps/$PKG.png"
 install -Dm644 packaging/metainfo/io.github.rustzip.SevenRustZip.metainfo.xml \
-                                           "$STAGE/usr/share/metainfo/$PKG.metainfo.xml"
+                                           "$STAGE/usr/share/metainfo/io.github.rustzip.SevenRustZip.metainfo.xml"
 install -Dm644 README.md                   "$STAGE/usr/share/doc/$PKG/README.md"
 install -Dm644 packaging/deb/copyright     "$STAGE/usr/share/doc/$PKG/copyright"
 install -Dm755 packaging/deb/postinst      "$STAGE/DEBIAN/postinst"

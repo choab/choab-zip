@@ -15,7 +15,8 @@ Description: Native 7-Zip-style archiver for Linux
  Features:
   * Read and write 7z, zip, tar, tar.gz, tar.xz, tar.bz2 and tar.zst
   * Read RAR archives natively (no unrar binary needed)
-  * Browse archive contents in-app, preview text and hex dumps
+  * Browse archive contents in-app, preview small text files
+  * Open PDFs, media, images and office documents with the system default app
   * Extract everything, or just the selected item
   * Test archives for integrity, inspect properties
   * No Wine, no Qt, no external 7z process

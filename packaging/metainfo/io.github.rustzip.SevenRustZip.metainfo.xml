@@ -17,13 +17,14 @@
     <ul>
       <li>Read and write 7z, zip, tar, tar.gz, tar.xz, tar.bz2 and tar.zst</li>
       <li>Read RAR archives natively</li>
-      <li>Browse archive contents in-app, preview text files and hex dumps</li>
+      <li>Browse archive contents in-app, preview small text files</li>
+      <li>Open PDFs, media, images and office documents with the system app</li>
       <li>Extract everything or only the selected item</li>
       <li>Test archive integrity and inspect properties</li>
     </ul>
   </description>
 
-  <launchable type="desktop-id">7rust-zip.desktop</launchable>
+  <launchable type="desktop-id">io.github.rustzip.SevenRustZip.desktop</launchable>
 
 
 
@@ -50,6 +51,14 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.1.1" date="2026-10-31">
+      <description>
+        <p>Text-only built-in viewer. PDFs, images, audio, video, office
+        documents and other desktop file types now open with the system
+        default application. Archive entries are extracted to a temporary
+        copy first.</p>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-10-28">
       <description>
         <p>First packaged release: two-pane browser, 7z/zip/tar read+write,
