@@ -1,4 +1,4 @@
-Package: 7rust-zip
+Package: iob-zip
 Version: @VERSION@
 Section: utils
 Priority: optional

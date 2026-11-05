@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build a Flatpak for 7rust-zip and bundle it into dist/*.flatpak
+# Build a Flatpak for iob-zip and bundle it into dist/*.flatpak
 #
 #   ./scripts/package-flatpak.sh
 #
@@ -15,16 +15,16 @@
 #
 # Output:
 #   dist/repo/                                     (local OSTree repo)
-#   dist/io.github.rustzip.SevenRustZip.flatpak    (single-file bundle)
+#   dist/io.github.iobzip.IobZip.flatpak    (single-file bundle)
 #
 # Install the bundle with:
-#   flatpak install --user dist/io.github.rustzip.SevenRustZip.flatpak
+#   flatpak install --user dist/io.github.iobzip.IobZip.flatpak
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-APP_ID=io.github.rustzip.SevenRustZip
+APP_ID=io.github.iobzip.IobZip
 RUNTIME_VERSION=25.08
 DIST="$ROOT/dist"
 BUILD_DIR="$DIST/flatpak-build"

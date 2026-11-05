@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
-# Build a Debian/Ubuntu .deb for 7rust-zip.
+# Build a Debian/Ubuntu .deb for iob-zip.
 #
 #   ./scripts/package-deb.sh            # release build + package
 #   SKIP_BUILD=1 ./scripts/package-deb.sh
 #
-# Output: dist/7rust-zip_<version>_<arch>.deb
+# Output: dist/iob-zip_<version>_<arch>.deb
 #
 # The binary is linked against the build machine's glibc, so the package's
 # libc6 requirement is derived from the symbols the binary actually needs.
@@ -14,8 +14,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-PKG=7rust-zip
-BIN=target/release/7rust-zip
+PKG=iob-zip
+BIN=target/release/iob-zip
 VERSION="$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -1)"
 ARCH_DEB="$(dpkg --print-architecture)"
 CARGO_ARCH="$(rustc -vV | sed -n 's/^host: //p')"
@@ -24,7 +24,7 @@ mkdir -p "$DIST"
 # Stage outside the source tree: the checkout may live on a filesystem that
 # cannot represent Unix permissions (NTFS/exFAT/9p), and dpkg-deb rejects a
 # world-writable DEBIAN directory.
-STAGE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/7rust-zip-deb.XXXXXX")"
+STAGE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/iob-zip-deb.XXXXXX")"
 STAGE="$STAGE_ROOT/${PKG}_${VERSION}_${ARCH_DEB}"
 trap 'rm -rf "$STAGE_ROOT"' EXIT
 
@@ -38,11 +38,14 @@ fi
 
 echo "==> staging ${STAGE}"
 install -Dm755 "$BIN"                      "$STAGE/usr/bin/$PKG"
-install -Dm644 assets/7rust-zip.desktop    "$STAGE/usr/share/applications/io.github.rustzip.SevenRustZip.desktop"
-install -Dm644 assets/icon.png             "$STAGE/usr/share/icons/hicolor/256x256/apps/$PKG.png"
-install -Dm644 assets/icon512.png          "$STAGE/usr/share/icons/hicolor/512x512/apps/$PKG.png"
-install -Dm644 packaging/metainfo/io.github.rustzip.SevenRustZip.metainfo.xml \
-                                           "$STAGE/usr/share/metainfo/io.github.rustzip.SevenRustZip.metainfo.xml"
+install -Dm644 assets/iob-zip.desktop    "$STAGE/usr/share/applications/io.github.iobzip.IobZip.desktop"
+for size in 16 22 24 32 48 64 128 256 512; do
+    src="assets/icon${size}.png"
+    [ "$size" = "256" ] && src="assets/icon.png"
+    install -Dm644 "$src"                  "$STAGE/usr/share/icons/hicolor/${size}x${size}/apps/$PKG.png"
+done
+install -Dm644 packaging/metainfo/io.github.iobzip.IobZip.metainfo.xml \
+                                           "$STAGE/usr/share/metainfo/io.github.iobzip.IobZip.metainfo.xml"
 install -Dm644 README.md                   "$STAGE/usr/share/doc/$PKG/README.md"
 install -Dm644 packaging/deb/copyright     "$STAGE/usr/share/doc/$PKG/copyright"
 install -Dm755 packaging/deb/postinst      "$STAGE/DEBIAN/postinst"
@@ -55,7 +58,7 @@ mkdir -p "$STAGE/usr/share/doc/$PKG"
     echo
     echo "  * Release $VERSION."
     echo
-    echo " -- ${MAINTAINER:-$(git config user.name 2>/dev/null || echo '7rust-zip maintainers')} <${MAINTAINER_EMAIL:-$(git config user.email 2>/dev/null || echo 'maintainers@localhost')}>  $(date -R)"
+    echo " -- ${MAINTAINER:-$(git config user.name 2>/dev/null || echo 'iob-zip maintainers')} <${MAINTAINER_EMAIL:-$(git config user.email 2>/dev/null || echo 'maintainers@localhost')}>  $(date -R)"
 } | gzip -9n > "$STAGE/usr/share/doc/$PKG/changelog.gz"
 
 # --- dependency analysis ----------------------------------------------------
@@ -75,7 +78,7 @@ done
 DEP_LIST="$(IFS=,; echo "${DEPENDS[*]}" | sed 's/,/, /g')"
 
 SIZE_KB="$(du -sk --exclude=DEBIAN "$STAGE" | cut -f1)"
-MAINTAINER="${MAINTAINER:-$(git config user.name 2>/dev/null || echo '7rust-zip maintainers')}"
+MAINTAINER="${MAINTAINER:-$(git config user.name 2>/dev/null || echo 'iob-zip maintainers')}"
 MAINTAINER_EMAIL="${MAINTAINER_EMAIL:-$(git config user.email 2>/dev/null || echo 'maintainers@localhost')}"
 
 sed -e "s|@VERSION@|$VERSION|g" \

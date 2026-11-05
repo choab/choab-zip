@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.iobzip.IobZip</id>
+  <name>iob-zip</name>
+  <summary>Native 7-Zip-style archiver for Linux</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <description>
+    <p>
+      A two-pane archive manager written in pure Rust. Browse your files on the
+      left and the contents of an archive on the right, without Wine, Qt or an
+      external 7z process.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Read and write 7z, zip, tar, tar.gz, tar.xz, tar.bz2 and tar.zst</li>
+      <li>Read RAR archives natively</li>
+      <li>Browse archive contents in-app, preview small text files</li>
+      <li>Open PDFs, media, images and office documents with the system app</li>
+      <li>Extract everything or only the selected item</li>
+      <li>Test archive integrity and inspect properties</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">io.github.iobzip.IobZip.desktop</launchable>
+
+
+
+  <categories>
+    <category>Utility</category>
+    <category>Archiving</category>
+    <category>FileTools</category>
+  </categories>
+
+  <keywords>
+    <keyword>archive</keyword>
+    <keyword>7z</keyword>
+    <keyword>zip</keyword>
+    <keyword>tar</keyword>
+    <keyword>rar</keyword>
+    <keyword>compress</keyword>
+    <keyword>extract</keyword>
+  </keywords>
+
+  <developer id="io.github.iobzip">
+    <name>iob-zip contributors</name>
+  </developer>
+
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="0.5.0" date="2026-11-03">
+      <description>
+        <p>Archives found inside another archive are extracted to a temporary folder and opened
+        in a new iob-zip window; small text files and images still preview in place, everything
+        else is handed to the desktop after extraction.</p>
+      </description>
+    </release>
+    <release version="0.4.0" date="2026-11-03">
+      <description>
+        <p>The application is now called iob-zip, with a new app id
+        (io.github.iobzip.IobZip), a new executable name and icons at every
+        standard size.</p>
+      </description>
+    </release>
+    <release version="0.3.0" date="2026-11-03">
+      <description>
+        <p>Monochrome. The interface is now strictly black, white and grey, with
+        higher text and border contrast in both light and dark mode. The icon
+        set was redrawn on a single stroke weight and the application icon is a
+        new greyscale mark.</p>
+      </description>
+    </release>
+    <release version="0.2.0" date="2026-11-03">
+      <description>
+        <p>New interface. A single header bar, a flat icon-and-label command bar,
+        a places sidebar, vector icons drawn at any scale, unified list columns
+        with sort carets, an inspector-style viewer that never squeezes the
+        archive pane, and centred dialogs. Colours follow the Plasma colour
+        scheme and accent colour, with light and dark variants.</p>
+      </description>
+    </release>
+    <release version="0.1.2" date="2026-11-02">
+      <description>
+        <p>AES-256 encrypted 7z archives with interactive in-app password dialog, full compression control (levels 0-9, codecs LZMA2/ZSTD/BZIP2/Deflate/Brotli/LZ4/Copy, solid blocks, header encryption), pure-Rust CRC-32 and SHA-256 hash calculator, native in-app image viewer (PNG, JPG, BMP, GIF, WEBP), multi-item selection with batch extract and delete, interactive breadcrumb navigation, and Dark/Light theme switcher.</p>
+      </description>
+    </release>
+    <release version="0.1.1" date="2026-10-31">
+      <description>
+        <p>Text-only built-in viewer. PDFs, images, audio, video, office
+        documents and other desktop file types now open with the system
+        default application. Archive entries are extracted to a temporary
+        copy first.</p>
+      </description>
+    </release>
+    <release version="0.1.0" date="2026-10-28">
+      <description>
+        <p>First packaged release: two-pane browser, 7z/zip/tar read+write,
+        RAR reading, in-app viewer, 2026-style icon set.</p>
+      </description>
+    </release>
+  </releases>
+</component>

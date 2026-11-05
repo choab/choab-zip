@@ -1,11 +1,11 @@
 [package]
-name = "rustzip7"
-version = "0.1.1"
+name = "iob-zip"
+version = "0.5.0"
 edition = "2021"
 description = "Native, 7-Zip-style archiver for Linux — pure Rust"
 
 [[bin]]
-name = "7rust-zip"
+name = "iob-zip"
 path = "src/main.rs"
 
 [dependencies]
@@ -20,6 +20,7 @@ xz2 = "0.1"
 bzip2 = "0.6"
 zstd = "0.13"
 unrar = "0.5.8"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "gif", "webp"] }
 
 [profile.release]
 opt-level = 3

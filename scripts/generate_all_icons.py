@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate the toolbar / row / window-control icon set for 7rust-zip.
+Generate the toolbar / row / window-control icon set for iob-zip.
 Uses Pycairo for vector precision, multi-stop gradients, and micro-details,
 and PIL for high-quality downsampling.
 
