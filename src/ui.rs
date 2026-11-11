@@ -1794,6 +1794,12 @@ impl eframe::App for ChoabZip {
         );
 
         // Keyboard navigation and type-to-find, unless a text field has focus.
+        // With a single pane the keyboard always talks to what is visible.
+        self.focus = if self.archive.is_some() {
+            Pane::Archive
+        } else {
+            Pane::Files
+        };
         let rows = self.visible_rows();
         let names: Vec<String> = match self.focus {
             Pane::Files => self.dirs.iter().map(|r| r.name.clone()).collect(),
@@ -1855,16 +1861,18 @@ impl eframe::App for ChoabZip {
                 .show(&mut child, |ui| self.ui_sidebar(ui));
         }
 
-        egui::Panel::left("files_pane")
-            .resizable(true)
-            .default_size(470.0)
-            .min_size(280.0)
-            .frame(egui::Frame::NONE.fill(p.bg_content))
-            .show(&mut child, |ui| self.ui_files(ui));
-
+        // One content pane. The filesystem and the open archive share it: an
+        // archive replaces the file list instead of squeezing it into half a
+        // window, and Ctrl+W brings the filesystem back.
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(p.bg_content))
-            .show(&mut child, |ui| self.ui_archive(ui));
+            .show(&mut child, |ui| {
+                if self.archive.is_some() {
+                    self.ui_archive(ui);
+                } else {
+                    self.ui_files(ui);
+                }
+            });
 
         self.ui_dialogs(child.ctx());
 

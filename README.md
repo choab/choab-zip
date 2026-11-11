@@ -16,7 +16,7 @@ system default application.
 ## Why
 
 7-Zip's engine is excellent; its interface belongs to 2005. Linux deserves a
-fast, native archiver with a two-pane layout and a modern shell around it —
+fast, native archiver with a single-pane layout and a modern shell around it —
 black, white and grey, real icons, and no windows-inside-windows. That's all
 this is.
 
@@ -37,7 +37,7 @@ this is.
 | **Drag & Drop** | drop archives to open, drop files/folders to create archive or navigate |
 | **Modern Interface** | header bar, flat command bar, places sidebar, vector icons, inspector viewer, centred dialogs |
 | **Theme Switcher** | strictly greyscale; white by default, `Ctrl+D` toggles and the choice is remembered (`theme=system` in `~/.config/choab-zip/prefs.conf` follows the desktop scheme again) |
-| **Two-Pane Layout** | left filesystem browser, right archive browser (mirrors 7zFM) |
+| **Single Content Pane** | the filesystem or the open archive, never squeezed side by side (`Ctrl+W` closes the archive, or the window when nothing is open) |
 | **Keyboard Navigation & Shortcuts** | F5 (Copy), F7 (New Folder), Delete, Backspace, Enter, Ctrl+PgUp/PgDn, Ctrl+A, Ctrl+D, Esc, type-to-find |
 | **Integrity Testing** | native CRC/decompression verification pass |
 | **Cross-Platform & Pure Rust** | no Wine, no Qt, no external `7z` subprocesses, 100% pure Rust |
@@ -53,16 +53,22 @@ One window, four regions:
 header bar      app mark · open archive · window controls
 command bar     Add · Extract · Selected · Test · Hashes │ folder & file ops │ Up · Refresh
 sidebar         Places (Home, Desktop, Documents, …) and mounted devices
-two panes       filesystem on the left, archive contents on the right
+content pane    the filesystem — or, once an archive is open, its contents
 ```
 
-- The viewer (text, images) docks **below** the panes, so opening a file never
-  squeezes the archive list.
+One pane, not two. Opening an archive replaces the file list with the archive's
+contents; `Ctrl+W` (or the ✕ in the archive header) closes it and the file list
+comes back. With no archive open, `Ctrl+W` closes the window. That keeps the
+whole width for whichever list you are actually reading instead of splitting it
+in half.
+
+- The viewer (text, images) docks **below** the content pane, so opening a file
+  never squeezes the list.
 - Icons are drawn as vectors on a single weight, so they stay crisp at any
   scale and never need asset files.
 - The palette is strictly greyscale — no hue anywhere, including the accent —
-  with light and dark variants chosen from the Plasma colour scheme
-  (`kdeglobals`: `ColorScheme`) and a manual toggle on `Ctrl+D`.
+  white by default, with `Ctrl+D` toggling and remembering the choice
+  (`theme=system` in `~/.config/choab-zip/prefs.conf` follows the desktop).
 - Columns drop from Packed to Modified to Size as a pane narrows, instead of
   overlapping.
 
@@ -150,7 +156,7 @@ that a given codec works on your machine.
 - `src/main.rs` — application state: navigation, archive operations, worker
   threads and the dialogs.
 - `src/ui.rs` — the interface: header bar, command bar, places sidebar, the two
-  panes, the viewer dock and the status bar.
+  pane, the viewer dock and the status bar.
 - `src/design.rs` — palette (strictly greyscale), type scale, the vector icon
   set and the small widgets everything is built from.
 - `assets/icon*.png` — the app icon at every hicolor size (16–512), generated
@@ -267,10 +273,10 @@ The rules that matter:
 Taken from the actual 7-Zip source; see [docs-7zip-behavior.md](docs-7zip-behavior.md).
 
 - **Double-click a folder** → enter it.
-- **Double-click an archive** → open it in the archive pane.
+- **Double-click an archive** → open it in the content pane (replacing the file list).
 - **Double-click an archive inside an archive** → it is extracted to a temp
   folder and opened in a new choab-zip window, so nested archives never fight
-  over the single archive pane.
+  over the single content pane.
 - **Double-click a text file** → preview it natively with syntax-agnostic viewer, search & wrap.
 - **Double-click an image** (PNG, JPG, BMP, GIF, WEBP) → preview it natively in-app with dimensions.
 - **Double-click a PDF, video, audio, office doc** → extract a temporary copy and launch system default app.
@@ -278,10 +284,11 @@ Taken from the actual 7-Zip source; see [docs-7zip-behavior.md](docs-7zip-behavi
 - **Backspace / Ctrl+PgUp** → go up one level (parent directory).
 - **Arrows / Home / End / PageUp / PageDown** → navigate rows.
 - **Ctrl+Click / Shift+Click** → multi-item selection.
-- **Ctrl+A** → select all items in active pane.
+- **Ctrl+A** → select everything in the content pane.
 - **F5** → copy selected files to destination folder.
 - **F7** → create new folder in current directory.
 - **Delete** → confirm and delete selected items (files or folders).
+- **Ctrl+W** → close the open archive (window stays); with nothing open, close the app.
 - **Ctrl+D** → toggle Dark / Light theme.
 - **Esc** → close preview or dialog / clear selection / cancel search.
 - **Type-to-find** → typing jumps to the first matching name.

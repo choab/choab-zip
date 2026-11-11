@@ -568,6 +568,16 @@ impl ChoabZip {
     }
 
     fn enter_dir(&mut self, p: PathBuf) {
+        // The filesystem and the archive share one pane, so browsing the
+        // filesystem means leaving the archive behind.
+        if self.archive.is_some() {
+            self.archive = None;
+            self.entries.clear();
+            self.inner.clear();
+            self.arc_sel.clear();
+            self.arc_focus = None;
+            self.preview = None;
+        }
         self.cwd = p.clone();
         self.cwd_edit_text = p.display().to_string();
         self.cwd_editing = false;
@@ -578,6 +588,12 @@ impl ChoabZip {
     }
 
     fn go_up(&mut self) {
+        // One pane: "Up" acts on whatever is on screen. Inside an archive it
+        // climbs the inner folders, and at the archive root it leaves.
+        if self.archive.is_some() {
+            self.archive_go_up();
+            return;
+        }
         if let Some(p) = self.cwd.parent() {
             let old = self.cwd.clone();
             self.enter_dir(p.to_path_buf());
@@ -1436,6 +1452,9 @@ impl ChoabZip {
         let ctrl = ui.input(|i| i.modifiers.command || i.modifiers.ctrl);
         let ctrl_a = ui.input(|i| (i.modifiers.command || i.modifiers.ctrl) && i.key_pressed(egui::Key::A));
         let ctrl_d = ui.input(|i| (i.modifiers.command || i.modifiers.ctrl) && i.key_pressed(egui::Key::D));
+        let ctrl_w = ui.input(|i| {
+            (i.modifiers.command || i.modifiers.ctrl) && i.key_pressed(egui::Key::W)
+        });
         let ctrl_pgup = ui.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::PageUp));
         let ctrl_pgdn = ui.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::PageDown));
 
@@ -1462,6 +1481,17 @@ impl ChoabZip {
 
         if ctrl_d {
             self.toggle_theme(ui.ctx());
+        }
+
+        // Ctrl+W closes the archive that is open and leaves the window alone;
+        // with nothing open it closes the app.
+        if ctrl_w {
+            if self.archive.is_some() {
+                self.close_archive();
+                self.status = "Archive closed".to_string();
+            } else {
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            }
         }
 
         if f5 {
@@ -2524,8 +2554,9 @@ fn main() -> eframe::Result<()> {
 
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1280.0, 800.0])
-            .with_min_inner_size([980.0, 560.0])
+            // One content pane instead of two: no need for a wide window.
+            .with_inner_size([1040.0, 720.0])
+            .with_min_inner_size([720.0, 460.0])
             .with_title("CHOAB Zip")
             .with_app_id(window_app_id())
             .with_icon(window_icon())
