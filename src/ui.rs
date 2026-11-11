@@ -8,7 +8,7 @@ use crate::design::{
     self, chip, chip_width, cmd_button, elide, hairline, icon_button, paint_icon, section_label,
     Icon, Palette, COMMAND_H, HEADER_H, ROW_H, SIDEBAR_W, STATUS_H,
 };
-use crate::{engine, human, Pane, Place, IobZip, SortCol};
+use crate::{engine, human, Pane, Place, ChoabZip, SortCol};
 use eframe::egui::{
     self, Align2, Color32, FontId, Margin, Rect, Response, Sense, Stroke, Vec2,
 };
@@ -70,7 +70,7 @@ impl Cols {
     }
 }
 
-impl IobZip {
+impl ChoabZip {
     pub fn palette(&self) -> Palette {
         Palette::new(self.theme)
     }
@@ -92,7 +92,7 @@ impl IobZip {
             let (mark, _) = ui.allocate_exact_size(Vec2::splat(20.0), Sense::hover());
             design::paint_mark(ui.painter(), mark, &p);
             ui.label(
-                egui::RichText::new("iob-zip")
+                egui::RichText::new("CHOAB Zip")
                     .size(13.5)
                     .strong()
                     .color(p.text),
@@ -1645,7 +1645,7 @@ fn search_box(
 
 // ------------------------------------------------------------- app glue
 
-impl eframe::App for IobZip {
+impl eframe::App for ChoabZip {
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         [0.0, 0.0, 0.0, 0.0]
     }
@@ -1787,7 +1787,7 @@ impl eframe::App for IobZip {
 
 // ------------------------------------------------------- window plumbing
 
-impl IobZip {
+impl ChoabZip {
     /// Own implementation of "drag the window by its titlebar".
     ///
     /// Started only after the pointer actually travels, so a double-click (which

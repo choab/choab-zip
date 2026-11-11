@@ -335,6 +335,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "choab-zip"
+version = "0.5.0"
+dependencies = [
+ "bzip2",
+ "eframe",
+ "egui",
+ "flate2",
+ "image",
+ "rfd",
+ "sevenz-rust2",
+ "tar",
+ "unrar",
+ "xz2",
+ "zip",
+ "zstd 0.13.3",
+]
+
+[[package]]
 name = "cipher"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1146,24 +1164,6 @@ checksum = "3b5cf4372d022092674a83b8febf5865f7a573cc0c5baec5e49c879b6a20978f"
 dependencies = [
  "block-padding",
  "hybrid-array",
-]
-
-[[package]]
-name = "iob-zip"
-version = "0.5.0"
-dependencies = [
- "bzip2",
- "eframe",
- "egui",
- "flate2",
- "image",
- "rfd",
- "sevenz-rust2",
- "tar",
- "unrar",
- "xz2",
- "zip",
- "zstd 0.13.3",
 ]
 
 [[package]]

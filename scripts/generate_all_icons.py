@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Generate the toolbar / row / window-control icon set for iob-zip.
+Generate the toolbar / row / window-control icon set for choab-zip.
 Uses Pycairo for vector precision, multi-stop gradients, and micro-details,
 and PIL for high-quality downsampling.
 
 The application identity icons (window/taskbar icon, titlebar badge, archive
 file-type icons) are *not* drawn here - they are derived from the hand-made
-logo `assets/7rz.logo.png` by `scripts/make_logo_icons.py`, so that re-running
+logo `assets/choab-zip-logo.png` by `scripts/make_logo_icons.py`, so that re-running
 this script never overwrites them.
 """
 

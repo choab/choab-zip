@@ -1,4 +1,4 @@
-Package: iob-zip
+Package: choab-zip
 Version: @VERSION@
 Section: utils
 Priority: optional

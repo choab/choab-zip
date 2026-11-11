@@ -1,11 +1,11 @@
-app-id: io.github.iobzip.IobZip
+app-id: io.github.choab.Zip
 runtime: org.freedesktop.Platform
 runtime-version: '25.08'
 sdk: org.freedesktop.Sdk
 # The freedesktop SDK ships Rust as an optional extension
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
-command: iob-zip
+command: choab-zip
 
 finish-args:
   # GUI
@@ -22,29 +22,29 @@ finish-args:
   - --talk-name=org.freedesktop.portal.Documents
 
 modules:
-  - name: iob-zip
+  - name: choab-zip
     buildsystem: simple
     build-options:
       append-path: /usr/lib/sdk/rust-stable/bin
       env:
-        CARGO_HOME: /run/build/iob-zip/.cargo
+        CARGO_HOME: /run/build/choab-zip/.cargo
         CARGO_NET_OFFLINE: 'false'
       # cargo needs to fetch the crates.io dependencies
       build-args:
         - --share=network
     build-commands:
       - cargo build --release --locked
-      - install -Dm755 target/release/iob-zip /app/bin/iob-zip
-      - install -Dm644 packaging/flatpak/io.github.iobzip.IobZip.desktop
-        /app/share/applications/io.github.iobzip.IobZip.desktop
+      - install -Dm755 target/release/choab-zip /app/bin/choab-zip
+      - install -Dm644 packaging/flatpak/io.github.choab.Zip.desktop
+        /app/share/applications/io.github.choab.Zip.desktop
       - |
         for size in 16 22 24 32 48 64 128 256 512; do
           src="assets/icon${size}.png"
           [ "$size" = "256" ] && src="assets/icon.png"
-          install -Dm644 "$src" /app/share/icons/hicolor/${size}x${size}/apps/io.github.iobzip.IobZip.png
+          install -Dm644 "$src" /app/share/icons/hicolor/${size}x${size}/apps/io.github.choab.Zip.png
         done
-      - install -Dm644 packaging/metainfo/io.github.iobzip.IobZip.metainfo.xml
-        /app/share/metainfo/io.github.iobzip.IobZip.metainfo.xml
+      - install -Dm644 packaging/metainfo/io.github.choab.Zip.metainfo.xml
+        /app/share/metainfo/io.github.choab.Zip.metainfo.xml
     sources:
       - type: dir
         path: ../..

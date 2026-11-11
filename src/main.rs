@@ -1,4 +1,4 @@
-//! iob-zip — a native, 7-Zip-style archiver for Linux.
+//! choab-zip — a native, 7-Zip-style archiver for Linux.
 //!
 //! Pure Rust: sevenz-rust2 for 7z, `zip` for zip, `tar` + codecs for tarballs,
 //! egui for the UI. No Wine, no Qt, no `7z` subprocess. Text files are
@@ -63,7 +63,7 @@ enum Msg {
         name: String,
         result: Result<(), String>,
     },
-    /// An archive entry was extracted for a fresh iob-zip window.
+    /// An archive entry was extracted for a fresh choab-zip window.
     NestedArchive {
         name: String,
         result: Result<(), String>,
@@ -79,6 +79,20 @@ enum Msg {
         size: u64,
         error: Option<String>,
     },
+}
+
+/// Wayland app id / X11 `WM_CLASS` — what the desktop shell matches a window
+/// against its `.desktop` file. Flatpak exports that file under the reverse-DNS
+/// id, so inside the sandbox the id must be the full app id; otherwise the
+/// shell cannot resolve the window and falls back to showing the raw sandbox id
+/// (`io.github.choab.Zip`) as the application name. A plain install ships
+/// `choab-zip.desktop`, so the plain binary name is the right id there.
+fn window_app_id() -> &'static str {
+    if std::path::Path::new("/.flatpak-info").exists() {
+        "io.github.choab.Zip"
+    } else {
+        "choab-zip"
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -224,7 +238,7 @@ impl Place {
     }
 }
 
-struct IobZip {
+struct ChoabZip {
     cwd: PathBuf,
     cwd_editing: bool,
     cwd_edit_text: String,
@@ -312,7 +326,7 @@ struct Preview {
     search_query: String,
 }
 
-impl IobZip {
+impl ChoabZip {
     fn new(cc: &eframe::CreationContext<'_>, start: Option<PathBuf>) -> Self {
         let mode = design::system_mode();
         design::apply(&cc.egui_ctx, &design::Palette::new(mode));
@@ -1499,7 +1513,7 @@ fn save_nested_archive(entry_path: &str, bytes: &[u8]) -> Result<PathBuf, String
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let dir = std::env::temp_dir()
-        .join("iob-zip")
+        .join("choab-zip")
         .join("nested")
         .join(format!("{}-{stamp}", std::process::id()));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -1529,7 +1543,7 @@ fn open_bytes_externally(entry_path: &str, bytes: &[u8]) -> Result<(), String> {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let dir = std::env::temp_dir()
-        .join("iob-zip")
+        .join("choab-zip")
         .join(format!("{}-{stamp}", std::process::id()));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let out = dir.join(base);
@@ -1579,7 +1593,7 @@ fn as_text(bytes: &[u8]) -> Option<String> {
 
 // ----------------------------------------------------------------- UI parts
 
-impl IobZip {
+impl ChoabZip {
     fn show_properties(&mut self) {
         self.info_lines.clear();
         if self.focus == Pane::Archive || self.dir_sel.is_empty() {
@@ -2112,7 +2126,7 @@ fn main() -> eframe::Result<()> {
                 std::process::exit(1);
             }
         }
-        let tmp = std::env::temp_dir().join(format!("iob-zip-selftest-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("choab-zip-selftest-{}", std::process::id()));
         match engine::extract(path, &tmp) {
             Ok(n) => println!("extract OK: {n} files -> {}", tmp.display()),
             Err(e) => {
@@ -2130,16 +2144,17 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 800.0])
             .with_min_inner_size([980.0, 560.0])
-            .with_title("iob-zip")
+            .with_title("CHOAB Zip")
+            .with_app_id(window_app_id())
             .with_icon(window_icon())
             .with_decorations(false)
             .with_transparent(true),
         ..Default::default()
     };
     eframe::run_native(
-        "iob-zip",
+        "choab-zip",
         opts,
-        Box::new(move |cc| Ok(Box::new(IobZip::new(cc, start)))),
+        Box::new(move |cc| Ok(Box::new(ChoabZip::new(cc, start)))),
     )
 }
 

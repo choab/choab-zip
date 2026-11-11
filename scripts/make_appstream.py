@@ -18,8 +18,8 @@ import re
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-METAINFO = ROOT / "packaging/metainfo/io.github.iobzip.IobZip.metainfo.xml"
-DESKTOP = ROOT / "packaging/flatpak/io.github.iobzip.IobZip.desktop"
+METAINFO = ROOT / "packaging/metainfo/io.github.choab.Zip.metainfo.xml"
+DESKTOP = ROOT / "packaging/flatpak/io.github.choab.Zip.desktop"
 
 
 def main() -> None:

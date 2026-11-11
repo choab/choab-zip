@@ -1,4 +1,4 @@
-//! Visual language for iob-zip: strictly greyscale, one type scale, one
+//! Visual language for choab-zip: strictly greyscale, one type scale, one
 //! icon set drawn as vectors.
 //!
 //! The palette never introduces hue: every surface, border and glyph is a

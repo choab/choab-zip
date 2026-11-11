@@ -1,8 +1,13 @@
-# iob-zip
+# CHOAB Zip
 
-A native, 7-Zip-style archiver for Linux, written in pure Rust.
+> **CHOAB** · شعب · *cha'b* — Arabic for "the people". شعبي (*sha'bi*) is the
+> word Arabic uses for what is everyday, folk, of the people. CHOAB is that
+> spirit in software: small tools, classic in form, quietly powerful in use.
+> Family: **choab-zip** (archives) · **choab-player** (media) · **choab-press**
+> (documents & printing).
 
-No Wine, no Qt, no `7z` subprocess. One ~11 MB self-contained binary.
+A native, 7-Zip-style archiver for Linux, written in pure Rust. No Wine, no Qt,
+no `7z` subprocess. One ~11 MB self-contained binary.
 
 Archive browsing and text preview are native. Files the desktop handles
 better (PDF, images, audio, video, office documents) are opened with the
@@ -39,8 +44,8 @@ this is.
 
 ## Interface
 
-![iob-zip, light theme](docs/screenshot-light.png)
-![iob-zip, dark theme](docs/screenshot-dark.png)
+![choab-zip, light theme](docs/screenshot-light.png)
+![choab-zip, dark theme](docs/screenshot-dark.png)
 
 One window, four regions:
 
@@ -69,13 +74,13 @@ a PDF, image, video, audio file, office document, or an unknown binary, the
 app asks the desktop to open it (`xdg-open`, with `gio open` / `kde-open` as
 fallbacks). Files inside archives are decoded to a temporary copy first,
 because the desktop needs a real path. Temporary copies live under
-`$TMPDIR/iob-zip/` and are left for the OS to clean up.
+`$TMPDIR/choab-zip/` and are left for the OS to clean up.
 
 ## Build
 
 ```bash
 cargo build --release
-./target/release/iob-zip
+./target/release/choab-zip
 ```
 
 Requires a Rust toolchain and X11/Wayland dev headers (for `eframe`).
@@ -83,7 +88,7 @@ Requires a Rust toolchain and X11/Wayland dev headers (for `eframe`).
 ## Verify the engine without a display
 
 ```bash
-./target/release/iob-zip --selftest path/to/archive.7z
+./target/release/choab-zip --selftest path/to/archive.7z
 ```
 
 Lists entries and extracts to a temp dir. Useful for CI and for checking
@@ -102,7 +107,7 @@ that a given codec works on your machine.
 - `assets/icon*.png` — the app icon at every hicolor size (16–512), generated
   by `scripts/make_app_icon.py`; `assets/icon.png` is the 256 px one embedded
   in the binary.
-- `assets/iob-zip.desktop` — launcher entry for the application menu.
+- `assets/choab-zip.desktop` — launcher entry for the application menu.
 - `scripts/make_appstream.py` — composes the AppStream catalogue entry that
   Flatpak expects, from the metainfo and the desktop file.
 
@@ -133,12 +138,12 @@ entry, the icon at every standard size (16–512 px) and AppStream metadata.
 
 ```bash
 ./scripts/package-deb.sh                 # cargo build --release + package
-sudo apt install ./dist/iob-zip_*_amd64.deb
+sudo apt install ./dist/choab-zip_*_amd64.deb
 ```
 
 Requirements are derived from the binary's own shared objects
 (`libc6`, `libgcc-s1`, `libstdc++6`); X11/Wayland/GTK/DBus are loaded at
-runtime, hence only `Recommends` entries. Remove with `sudo apt remove iob-zip`.
+runtime, hence only `Recommends` entries. Remove with `sudo apt remove choab-zip`.
 
 Note that the binary links against the build machine's glibc, so building on an
 older distro lowers the `libc6` floor (currently 2.39).
@@ -147,11 +152,11 @@ older distro lowers the `libc6` floor (currently 2.39).
 
 ```bash
 ./scripts/package-flatpak.sh
-flatpak install --user dist/io.github.iobzip.IobZip.flatpak
-flatpak run io.github.iobzip.IobZip
+flatpak install --user dist/io.github.choab.Zip.flatpak
+flatpak run io.github.choab.Zip
 ```
 
-The script uses `packaging/flatpak/io.github.iobzip.IobZip.yml`, which
+The script uses `packaging/flatpak/io.github.choab.Zip.yml`, which
 builds against `org.freedesktop.Sdk//25.08` with the
 `org.freedesktop.Sdk.Extension.rust-stable` extension — the manifest to submit
 upstream. `flatpak-builder` can only see the *system* installation for
@@ -159,6 +164,14 @@ runtimes/extensions; when the extension is missing there, the script falls back
 to `...local.yml`, which downloads a pinned Rust toolchain as a build source so
 it works with an unprivileged user installation. Install `flatpak-builder`
 itself with `flatpak install --user -y flathub org.flatpak.Builder`.
+
+Without `flatpak-builder` the script falls back to `flatpak build-export` and
+`cargo build --release`, which needs no SDK and no network. That path compiles
+with the *host* toolchain, so it packages against the newest installed
+`org.freedesktop.Platform` branch (the binary links the host glibc and cannot
+run on an older runtime); the script checks both glibc versions and refuses to
+build a bundle that would fail at startup. The `flatpak-builder` path keeps
+using the manifest's `25.08`, because there the build happens inside that SDK.
 
 Both scripts stage outside the source tree, so the checkout may live on a
 filesystem that cannot store Unix permissions (NTFS/exFAT).
@@ -169,10 +182,10 @@ filesystem that cannot store Unix permissions (NTFS/exFAT).
 mkdir -p ~/.local/share/applications ~/.local/bin
 for size in 16 22 24 32 48 64 128 256 512; do
     src="assets/icon${size}.png"; [ "$size" = 256 ] && src="assets/icon.png"
-    install -Dm644 "$src" ~/.local/share/icons/hicolor/${size}x${size}/apps/iob-zip.png
+    install -Dm644 "$src" ~/.local/share/icons/hicolor/${size}x${size}/apps/choab-zip.png
 done
-cp assets/iob-zip.desktop ~/.local/share/applications/io.github.iobzip.IobZip.desktop
-ln -sf "$PWD/target/release/iob-zip" ~/.local/bin/iob-zip
+cp assets/choab-zip.desktop ~/.local/share/applications/io.github.choab.Zip.desktop
+ln -sf "$PWD/target/release/choab-zip" ~/.local/bin/choab-zip
 update-desktop-database ~/.local/share/applications
 ```
 
@@ -207,7 +220,7 @@ Taken from the actual 7-Zip source; see [docs-7zip-behavior.md](docs-7zip-behavi
 - **Double-click a folder** → enter it.
 - **Double-click an archive** → open it in the archive pane.
 - **Double-click an archive inside an archive** → it is extracted to a temp
-  folder and opened in a new iob-zip window, so nested archives never fight
+  folder and opened in a new choab-zip window, so nested archives never fight
   over the single archive pane.
 - **Double-click a text file** → preview it natively with syntax-agnostic viewer, search & wrap.
 - **Double-click an image** (PNG, JPG, BMP, GIF, WEBP) → preview it natively in-app with dimensions.

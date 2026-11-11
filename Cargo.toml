@@ -1,11 +1,11 @@
 [package]
-name = "iob-zip"
+name = "choab-zip"
 version = "0.5.0"
 edition = "2021"
-description = "Native, 7-Zip-style archiver for Linux — pure Rust"
+description = "CHOAB Zip — native, 7-Zip-style archiver for Linux, pure Rust"
 
 [[bin]]
-name = "iob-zip"
+name = "choab-zip"
 path = "src/main.rs"
 
 [dependencies]

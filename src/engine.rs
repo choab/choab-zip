@@ -2010,7 +2010,7 @@ mod tests {
 
     #[test]
     fn roundtrip_encrypted_7z_and_single_zst() {
-        let tmp = std::env::temp_dir().join(format!("7rz-engine-test-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("choab-zip-engine-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
 

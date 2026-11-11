@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Derive every application-identity PNG from the hand-made source logo
-`assets/7rz.logo.png`.
+`assets/choab-zip-logo.png`.
 
 Outputs
 -------
@@ -25,7 +25,7 @@ import os
 
 from PIL import Image, ImageDraw, ImageFilter
 
-SRC = "assets/7rz.logo.png"
+SRC = "assets/choab-zip-logo.png"
 ICONS_DIR = "assets/icons"
 
 # The logo's crimson, sampled from the source artwork.

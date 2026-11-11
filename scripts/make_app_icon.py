@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the iob-zip app icon: a black tile with a white zipper-7.
+"""Generate the choab-zip app icon: a black tile with a white zipper-7.
 
 Greyscale by design, matching the in-app mark drawn by `design::paint_mark`.
 Renders once at high resolution and downsamples, so every size stays crisp.

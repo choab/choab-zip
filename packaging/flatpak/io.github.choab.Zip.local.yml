@@ -1,10 +1,10 @@
-app-id: io.github.iobzip.IobZip
+app-id: io.github.choab.Zip
 runtime: org.freedesktop.Platform
 runtime-version: '25.08'
 sdk: org.freedesktop.Sdk
-command: iob-zip
+command: choab-zip
 
-# Variant of io.github.iobzip.IobZip.yml that does not need the
+# Variant of io.github.choab.Zip.yml that does not need the
 # org.freedesktop.Sdk.Extension.rust-stable extension. The toolchain is fetched
 # as a build source instead, which means this manifest works with an unprivileged
 # user installation (scripts/package-flatpak.sh picks it automatically when the
@@ -23,31 +23,31 @@ finish-args:
   - --talk-name=org.freedesktop.portal.Documents
 
 modules:
-  - name: iob-zip
+  - name: choab-zip
     buildsystem: simple
     build-options:
       env:
-        CARGO_HOME: /run/build/iob-zip/.cargo
+        CARGO_HOME: /run/build/choab-zip/.cargo
       build-args:
         - --share=network
     build-commands:
       # Toolchain bundled as a source (see the archive below). Each
       # build-command runs in a fresh shell, hence the sh -c wrappers.
-      - sh -c 'cd rust-toolchain && ./install.sh --prefix=/run/build/iob-zip/rust
+      - sh -c 'cd rust-toolchain && ./install.sh --prefix=/run/build/choab-zip/rust
           --disable-ldconfig
           --components=rustc,cargo,rust-std-x86_64-unknown-linux-gnu'
-      - sh -c 'export PATH=/run/build/iob-zip/rust/bin:$PATH && cargo build --release --locked'
-      - install -Dm755 target/release/iob-zip /app/bin/iob-zip
-      - install -Dm644 packaging/flatpak/io.github.iobzip.IobZip.desktop
-        /app/share/applications/io.github.iobzip.IobZip.desktop
+      - sh -c 'export PATH=/run/build/choab-zip/rust/bin:$PATH && cargo build --release --locked'
+      - install -Dm755 target/release/choab-zip /app/bin/choab-zip
+      - install -Dm644 packaging/flatpak/io.github.choab.Zip.desktop
+        /app/share/applications/io.github.choab.Zip.desktop
       - |
         for size in 16 22 24 32 48 64 128 256 512; do
           src="assets/icon${size}.png"
           [ "$size" = "256" ] && src="assets/icon.png"
-          install -Dm644 "$src" /app/share/icons/hicolor/${size}x${size}/apps/io.github.iobzip.IobZip.png
+          install -Dm644 "$src" /app/share/icons/hicolor/${size}x${size}/apps/io.github.choab.Zip.png
         done
-      - install -Dm644 packaging/metainfo/io.github.iobzip.IobZip.metainfo.xml
-        /app/share/metainfo/io.github.iobzip.IobZip.metainfo.xml
+      - install -Dm644 packaging/metainfo/io.github.choab.Zip.metainfo.xml
+        /app/share/metainfo/io.github.choab.Zip.metainfo.xml
     sources:
       - type: archive
         url: https://static.rust-lang.org/dist/2026-10-15/rust-1.99.1-x86_64-unknown-linux-gnu.tar.xz

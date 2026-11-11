@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>io.github.iobzip.IobZip</id>
-  <name>iob-zip</name>
+  <id>io.github.choab.Zip</id>
+  <name>CHOAB Zip</name>
   <summary>Native 7-Zip-style archiver for Linux</summary>
 
   <metadata_license>CC0-1.0</metadata_license>
@@ -9,9 +9,11 @@
 
   <description>
     <p>
-      A two-pane archive manager written in pure Rust. Browse your files on the
-      left and the contents of an archive on the right, without Wine, Qt or an
-      external 7z process.
+      CHOAB (Arabic: شعب, "the people") is a family of small, classic tools for
+      everyday computer work. CHOAB Zip is the archiver: a two-pane archive
+      manager written in pure Rust. Browse your files on the left and the
+      contents of an archive on the right, without Wine, Qt or an external 7z
+      process.
     </p>
     <p>Features:</p>
     <ul>
@@ -24,7 +26,7 @@
     </ul>
   </description>
 
-  <launchable type="desktop-id">io.github.iobzip.IobZip.desktop</launchable>
+  <launchable type="desktop-id">io.github.choab.Zip.desktop</launchable>
 
 
 
@@ -44,8 +46,8 @@
     <keyword>extract</keyword>
   </keywords>
 
-  <developer id="io.github.iobzip">
-    <name>iob-zip contributors</name>
+  <developer id="io.github.choab">
+    <name>CHOAB contributors</name>
   </developer>
 
   <content_rating type="oars-1.1"/>
@@ -54,15 +56,14 @@
     <release version="0.5.0" date="2026-11-03">
       <description>
         <p>Archives found inside another archive are extracted to a temporary folder and opened
-        in a new iob-zip window; small text files and images still preview in place, everything
+        in a new choab-zip window; small text files and images still preview in place, everything
         else is handed to the desktop after extraction.</p>
       </description>
     </release>
     <release version="0.4.0" date="2026-11-03">
       <description>
-        <p>The application is now called iob-zip, with a new app id
-        (io.github.iobzip.IobZip), a new executable name and icons at every
-        standard size.</p>
+        <p>New app id (io.github.choab.Zip), a new executable name and
+        icons at every standard size.</p>
       </description>
     </release>
     <release version="0.3.0" date="2026-11-03">
