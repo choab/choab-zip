@@ -46,7 +46,7 @@ pub fn is_image_name(name: &str) -> bool {
 }
 
 enum Msg {
-    Entries(PathBuf, Vec<engine::Entry>),
+    Entries(PathBuf, Vec<engine::Entry>, Option<String>),
     EntriesError(PathBuf, EngineError),
     Preview(Result<String, String>, String),
     PreviewImage {
@@ -69,6 +69,15 @@ enum Msg {
         result: Result<(), String>,
     },
     Done(String, bool),
+    /// Live progress of a streaming pass (reading or extracting).
+    Progress {
+        consumed: u64,
+        written: u64,
+        total: u64,
+        entries: usize,
+        entries_total: usize,
+        label: String,
+    },
     Verified(usize, Vec<String>),
     ChecksumResult {
         #[allow(dead_code)]
@@ -257,6 +266,8 @@ struct ChoabZip {
     filter: String,
     status: String,
     busy: bool,
+    /// Fraction + text of the pass in flight, for the status bar.
+    progress: Option<(f32, String)>,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
 
@@ -326,6 +337,55 @@ struct Preview {
     search_query: String,
 }
 
+/// Progress callback for a worker thread, throttled so the UI is not flooded.
+fn progress_sink(tx: Sender<Msg>) -> impl Fn(&engine::Progress) {
+    let last = std::cell::Cell::new(std::time::Instant::now());
+    move |p: &engine::Progress| {
+        let now = std::time::Instant::now();
+        if now.duration_since(last.get()) < std::time::Duration::from_millis(80) {
+            return;
+        }
+        last.set(now);
+        let _ = tx.send(Msg::Progress {
+            consumed: p.consumed,
+            written: p.written,
+            total: p.total,
+            entries: p.entries,
+            entries_total: p.entries_total,
+            label: p.label.clone(),
+        });
+    }
+}
+
+/// Report an extraction to the UI: a complete run is a success, a partial run is
+/// also a success (files were written and kept) but says exactly what happened.
+fn report_extract(
+    tx: &Sender<Msg>,
+    result: Result<engine::ExtractReport, EngineError>,
+    dest: &std::path::Path,
+) {
+    match result {
+        Ok(report) => {
+            let msg = if report.is_partial() {
+                format!(
+                    "{} — partial output kept in {}",
+                    report.summary(),
+                    dest.display()
+                )
+            } else {
+                report.summary()
+            };
+            let _ = tx.send(Msg::Done(msg, true));
+        }
+        Err(e) => {
+            let _ = tx.send(Msg::Done(
+                format!("Extract failed: {e} — anything already written was kept in {}", dest.display()),
+                false,
+            ));
+        }
+    }
+}
+
 impl ChoabZip {
     fn new(cc: &eframe::CreationContext<'_>, start: Option<PathBuf>) -> Self {
         let mode = design::system_mode();
@@ -369,6 +429,7 @@ impl ChoabZip {
             filter: String::new(),
             status: "Ready".into(),
             busy: false,
+            progress: None,
             tx,
             rx,
             sort_col: SortCol::Name,
@@ -560,12 +621,19 @@ impl ChoabZip {
         self.focus = Pane::Archive;
         let tx = self.tx.clone();
         let p_clone = path.clone();
-        std::thread::spawn(move || match engine::list_with_password(&p_clone, password.as_deref()) {
-            Ok(es) => {
-                let _ = tx.send(Msg::Entries(p_clone, es));
-            }
-            Err(e) => {
-                let _ = tx.send(Msg::EntriesError(p_clone, e));
+        std::thread::spawn(move || {
+            let sink = progress_sink(tx.clone());
+            match engine::list_with_report_progress(
+                &p_clone,
+                password.as_deref(),
+                Some(&sink as engine::ProgressSink<'_>),
+            ) {
+                Ok((es, warning)) => {
+                    let _ = tx.send(Msg::Entries(p_clone, es, warning));
+                }
+                Err(e) => {
+                    let _ = tx.send(Msg::EntriesError(p_clone, e));
+                }
             }
         });
     }
@@ -931,13 +999,18 @@ impl ChoabZip {
         self.status = format!("Extracting to {}…", dest.display());
         let tx = self.tx.clone();
         let password = self.cached_passwords.get(&archive).cloned();
-        std::thread::spawn(move || match engine::extract_with_password(&archive, &dest, password.as_deref()) {
-            Ok(n) => {
-                let _ = tx.send(Msg::Done(format!("Extracted {n} entries"), true));
-            }
-            Err(e) => {
-                let _ = tx.send(Msg::Done(format!("Extract failed: {e}"), false));
-            }
+        std::thread::spawn(move || {
+            let sink = progress_sink(tx.clone());
+            report_extract(
+                &tx,
+                engine::extract_with_progress(
+                    &archive,
+                    &dest,
+                    password.as_deref(),
+                    Some(&sink as engine::ProgressSink<'_>),
+                ),
+                &dest,
+            );
         });
     }
 
@@ -956,26 +1029,36 @@ impl ChoabZip {
         let arc_clone = archive.clone();
         if entries.is_empty() {
             self.status = format!("Extracting all to {}…", dest.display());
-            std::thread::spawn(move || match engine::extract_with_password(&arc_clone, &dest, password.as_deref()) {
-                Ok(n) => {
-                    let _ = tx.send(Msg::Done(format!("Extracted {n} entries"), true));
-                }
-                Err(e) => {
-                    let _ = tx.send(Msg::Done(format!("Extract failed: {e}"), false));
-                }
+            std::thread::spawn(move || {
+                let sink = progress_sink(tx.clone());
+                report_extract(
+                    &tx,
+                    engine::extract_with_progress(
+                        &arc_clone,
+                        &dest,
+                        password.as_deref(),
+                        Some(&sink as engine::ProgressSink<'_>),
+                    ),
+                    &dest,
+                );
             });
         } else {
             self.status = format!("Extracting {} selected items to {}…", entries.len(), dest.display());
             let prefix = self.inner.clone();
             std::thread::spawn(move || {
-                match engine::extract_entries_with_password(&arc_clone, &entries, &prefix, &dest, password.as_deref()) {
-                    Ok(n) => {
-                        let _ = tx.send(Msg::Done(format!("Extracted {n} items"), true));
-                    }
-                    Err(e) => {
-                        let _ = tx.send(Msg::Done(format!("Extract failed: {e}"), false));
-                    }
-                }
+                let sink = progress_sink(tx.clone());
+                report_extract(
+                    &tx,
+                    engine::extract_entries_with_progress(
+                        &arc_clone,
+                        &entries,
+                        &prefix,
+                        &dest,
+                        password.as_deref(),
+                        Some(&sink as engine::ProgressSink<'_>),
+                    ),
+                    &dest,
+                );
             });
         }
     }
@@ -1066,23 +1149,32 @@ impl ChoabZip {
     fn poll(&mut self, ctx: &egui::Context) {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
-                Msg::Entries(path, es) => {
+                Msg::Entries(path, es, warning) => {
                     if self.archive.as_deref() == Some(path.as_path()) {
-                        self.status = format!(
-                            "{} — {} entries ({})",
-                            path.file_name().and_then(|s| s.to_str()).unwrap_or("archive"),
-                            es.len(),
-                            human(engine::container_size(&path))
-                        );
+                        let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("archive");
+                        self.status = match &warning {
+                            Some(reason) => format!(
+                                "{name} — {} entries readable, source ends early ({reason}) — \
+                                 extract to keep what is there",
+                                es.len()
+                            ),
+                            None => format!(
+                                "{name} — {} entries ({})",
+                                es.len(),
+                                human(engine::container_size(&path))
+                            ),
+                        };
                         self.entries = es;
                         self.inner.clear();
                         self.arc_sel.clear();
                         self.arc_focus = None;
                     }
                     self.busy = false;
+                    self.progress = None;
                 }
                 Msg::EntriesError(path, err) => {
                     self.busy = false;
+                    self.progress = None;
                     if err.is_password_error() {
                         let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("archive");
                         self.password_dialog = Some(PasswordDialog {
@@ -1170,9 +1262,60 @@ impl ChoabZip {
                             format!("{n} tested, {} problem(s): {}", errs.len(), errs.join("; "));
                     }
                 }
+                Msg::Progress {
+                    consumed,
+                    written,
+                    total,
+                    entries,
+                    entries_total,
+                    label,
+                } => {
+                    // The source can be fully read while decompression is still
+                    // running (a 200 MB tar.gz of zeros is a few KB on disk), so
+                    // once the input is consumed the readout switches to the
+                    // bytes actually written and the bar parks just short of full
+                    // until the run really ends.
+                    let (frac, detail) = if total > 0 && consumed >= total && written > 0 {
+                        (
+                            0.99,
+                            format!("unpacking · {} written", human(written)),
+                        )
+                    } else if total > 0 && consumed >= total {
+                        // Source fully read, still decompressing: nothing is
+                        // written during a listing pass, so say what it is doing.
+                        (0.99, "decompressing…".to_string())
+                    } else if total > 0 {
+                        (
+                            (consumed as f32 / total as f32).clamp(0.0, 1.0),
+                            format!(
+                                "{}% · {} / {}",
+                                consumed * 100 / total,
+                                human(consumed),
+                                human(total)
+                            ),
+                        )
+                    } else if entries_total > 0 {
+                        (
+                            (entries as f32 / entries_total as f32).clamp(0.0, 1.0),
+                            format!("{entries}/{entries_total} · {} written", human(written)),
+                        )
+                    } else if written > 0 {
+                        (0.0, format!("{} written", human(written)))
+                    } else {
+                        (0.0, format!("{entries} done"))
+                    };
+                    let detail = if label.is_empty() {
+                        detail
+                    } else {
+                        format!("{detail} · {label}")
+                    };
+                    self.progress = Some((frac, detail));
+                    ctx.request_repaint();
+                }
                 Msg::Done(s, ok) => {
                     self.status = s;
                     self.busy = false;
+                    self.progress = None;
                     if ok {
                         self.refresh_dir();
                         if let Some(a) = self.archive.clone() {
@@ -2114,7 +2257,27 @@ fn main() -> eframe::Result<()> {
         let path = Path::new(&args[2]);
         let fmt = engine::detect(path);
         println!("format: {}", fmt.label());
-        match engine::list(path) {
+        // Same streaming path the UI uses, with progress echoed to stderr so a
+        // headless run shows it is actually being reported.
+        let sink = |p: &engine::Progress| {
+            let pct = if p.total > 0 {
+                format!("{}%", p.consumed * 100 / p.total)
+            } else {
+                format!("{} done", p.entries)
+            };
+            eprintln!("  progress {pct} · {}", p.label);
+        };
+        match engine::list_with_report_progress(
+            path,
+            None,
+            Some(&sink as engine::ProgressSink<'_>),
+        )
+        .map(|(es, warning)| {
+            if let Some(w) = &warning {
+                eprintln!("  warning: source ends early ({w})");
+            }
+            es
+        }) {
             Ok(es) => {
                 println!("entries: {}", es.len());
                 for e in es.iter().take(10) {
@@ -2127,8 +2290,13 @@ fn main() -> eframe::Result<()> {
             }
         }
         let tmp = std::env::temp_dir().join(format!("choab-zip-selftest-{}", std::process::id()));
-        match engine::extract(path, &tmp) {
-            Ok(n) => println!("extract OK: {n} files -> {}", tmp.display()),
+        match engine::extract_with_progress(
+            path,
+            &tmp,
+            None,
+            Some(&sink as engine::ProgressSink<'_>),
+        ) {
+            Ok(report) => println!("extract: {} -> {}", report.summary(), tmp.display()),
             Err(e) => {
                 eprintln!("extract error: {e}");
                 std::process::exit(1);

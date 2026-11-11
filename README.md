@@ -76,6 +76,34 @@ fallbacks). Files inside archives are decoded to a temporary copy first,
 because the desktop needs a real path. Temporary copies live under
 `$TMPDIR/choab-zip/` and are left for the OS to clean up.
 
+## Damaged and half-downloaded archives
+
+`tar`, `tar.gz`, `tar.xz`, `tar.bz2`, `tar.zst` and the single-stream `.gz` /
+`.xz` / `.bz2` / `.zst` formats are **streams**: there is nothing to seek, so a
+file that ends early still contains everything up to the break. choab-zip treats
+that as data to recover, not as a failure:
+
+- the archive **opens** and lists the entries that are actually readable,
+  with a warning naming the reason instead of refusing outright;
+- extraction **streams** — each file is written while it is decoded, never
+  buffered whole — so it stops at the break with everything before it intact;
+- **nothing is deleted.** Complete files stay, the fragment of the file that was
+  being written stays, and a copy of the damaged source is left beside them as
+  `<archive-name>.corrupt`;
+- the status bar reports exactly what happened: how many files were extracted,
+  which ones are incomplete, the reason it stopped, and where the damaged copy
+  is. While work is in flight it shows live progress drawn from the source file
+  size, switching to "unpacking · N written" once the source is fully read.
+
+Compressed tar of zeros is a few hundred KB on disk for hundreds of MB of
+output, so the readout deliberately keeps moving on the *write* side after the
+input is exhausted.
+
+Seekable formats behave differently: in `7z` the index lives at the end of the
+last volume, so a split set or a truncated `.7z` cannot be recovered this way —
+you get a hard error, exactly like `7z` itself. The same applies to split zip
+(`.z01`, `.z02`, …), which the `zip` crate refuses outright.
+
 ## Build
 
 ```bash

@@ -3,10 +3,13 @@
 //! Deliberately no shelling out to `7z`. Everything here is native Rust so the
 //! binary is self-contained, cross-platform, and fast.
 
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::{self, BufReader, BufWriter, Read, Seek, Write};
 use std::path::{Component, Path, PathBuf};
+use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -442,20 +445,44 @@ fn map_7z_error(e: sevenz_rust2::Error, has_password: bool) -> Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// List the contents of an archive without extracting.
+// Convenience wrapper for callers that do not need progress or warnings.
+#[allow(dead_code)]
 pub fn list(path: &Path) -> Result<Vec<Entry>> {
     list_with_password(path, None)
 }
 
 /// List the contents of an archive, supplying an optional password for encrypted headers.
 pub fn list_with_password(path: &Path, password: Option<&str>) -> Result<Vec<Entry>> {
+    Ok(list_with_report(path, password)?.0)
+}
+
+/// Like [`list_with_password`], but a truncated compressed stream is not an
+/// error: everything readable is returned together with the reason the walk
+/// stopped. A partially downloaded `.tar.gz` therefore still opens, listing the
+/// entries that are actually present.
+pub fn list_with_report(
+    path: &Path,
+    password: Option<&str>,
+) -> Result<(Vec<Entry>, Option<String>)> {
+    list_with_report_progress(path, password, None)
+}
+
+/// [`list_with_report`] while reporting how far through the file we are.
+pub fn list_with_report_progress(
+    path: &Path,
+    password: Option<&str>,
+    progress: Option<ProgressSink<'_>>,
+) -> Result<(Vec<Entry>, Option<String>)> {
     let fmt = detect(path);
     match fmt {
-        Format::SevenZ => list_7z(path, password),
-        Format::Zip => list_zip(path),
-        Format::Rar => list_rar(path),
-        Format::Gz | Format::Xz | Format::Bz2 | Format::Zst => list_single(path, fmt),
+        Format::SevenZ => Ok((list_7z(path, password)?, None)),
+        Format::Zip => Ok((list_zip(path)?, None)),
+        Format::Rar => Ok((list_rar(path)?, None)),
+        Format::Gz | Format::Xz | Format::Bz2 | Format::Zst => {
+            Ok((list_single(path, fmt)?, None))
+        }
         Format::Unknown => Err(Error::Other("unrecognised archive format".to_string())),
-        _ => list_tar(path),
+        _ => list_tar(path, progress),
     }
 }
 
@@ -702,23 +729,35 @@ fn list_zip(path: &Path) -> Result<Vec<Entry>> {
     Ok(out)
 }
 
-fn list_tar(path: &Path) -> Result<Vec<Entry>> {
+fn list_tar(
+    path: &Path,
+    progress: Option<ProgressSink<'_>>,
+) -> Result<(Vec<Entry>, Option<String>)> {
     let mut entries = Vec::new();
-    visit_tar(path, &mut |e| {
+    let mut sink = |e: Entry| {
         entries.push(e);
         Ok(())
-    })?;
-    Ok(entries)
+    };
+    let stopped = visit_tar(path, progress, &mut sink)?;
+    Ok((entries, stopped))
 }
 
 /// Walk a tar (optionally compressed) archive.
-fn visit_tar<F>(path: &Path, sink: &mut F) -> Result<()>
+///
+/// Best effort by design: when the stream ends early — an interrupted download,
+/// a damaged block — the entries read so far are still handed to `sink`, and the
+/// reason the walk stopped is returned instead of being thrown away. Callers
+/// turn that into a warning so the user can extract what is actually there.
+fn visit_tar<F>(
+    path: &Path,
+    progress: Option<ProgressSink<'_>>,
+    sink: &mut F,
+) -> Result<Option<String>>
 where
     F: FnMut(Entry) -> Result<()>,
 {
     let fmt = detect(path);
-    let file = File::open(path)?;
-    let buf = BufReader::new(file);
+    let (reader, ctx) = stream_reader(path, fmt, progress)?;
 
     let method_label = match fmt {
         Format::TarGz => "TAR+GZip",
@@ -728,19 +767,16 @@ where
         _ => "TAR",
     };
 
-    let reader: Box<dyn Read> = match fmt {
-        Format::TarGz => Box::new(flate2::read::GzDecoder::new(buf)),
-        Format::TarXz => Box::new(xz2::read::XzDecoder::new(buf)),
-        Format::TarBz2 => Box::new(bzip2::read::BzDecoder::new(buf)),
-        Format::TarZst => Box::new(
-            zstd::stream::read::Decoder::new(buf).map_err(|e| Error::Other(e.to_string()))?,
-        ),
-        _ => Box::new(buf),
-    };
-
     let mut ar = tar::Archive::new(reader);
-    for item in ar.entries().map_err(|e| Error::Other(e.to_string()))? {
-        let item = item.map_err(|e| Error::Other(e.to_string()))?;
+    let iter = match ar.entries() {
+        Ok(it) => it,
+        Err(e) => return Ok(Some(e.to_string())),
+    };
+    for item in iter {
+        let item = match item {
+            Ok(i) => i,
+            Err(e) => return Ok(Some(e.to_string())),
+        };
         let hdr = item.header();
         let is_dir = hdr.entry_type().is_dir();
         let size = hdr.size().unwrap_or(0);
@@ -755,6 +791,7 @@ where
         if p.is_empty() {
             continue;
         }
+        ctx.borrow_mut().entries += 1;
         sink(Entry {
             path: p,
             size,
@@ -766,7 +803,7 @@ where
             encrypted: false,
         })?;
     }
-    Ok(())
+    Ok(None)
 }
 
 fn format_nt(nt: u64) -> String {
@@ -848,7 +885,7 @@ pub fn sanitize_rel_path(rel: &str) -> Option<PathBuf> {
 
 /// Extract a single entry, or every entry under a directory prefix.
 #[allow(dead_code)]
-pub fn extract_entry(archive: &Path, entry_path: &str, dest: &Path) -> Result<usize> {
+pub fn extract_entry(archive: &Path, entry_path: &str, dest: &Path) -> Result<ExtractReport> {
     extract_entries_with_password(archive, &[entry_path.to_string()], "", dest, None)
 }
 
@@ -862,7 +899,20 @@ pub fn extract_entries_with_password(
     strip_prefix: &str,
     dest: &Path,
     password: Option<&str>,
-) -> Result<usize> {
+) -> Result<ExtractReport> {
+    extract_entries_with_progress(archive, targets, strip_prefix, dest, password, None)
+}
+
+/// [`extract_entries_with_password`] with progress reporting. Stream formats are
+/// best effort here too: a truncated source keeps everything decoded so far.
+pub fn extract_entries_with_progress(
+    archive: &Path,
+    targets: &[String],
+    strip_prefix: &str,
+    dest: &Path,
+    password: Option<&str>,
+    progress: Option<ProgressSink<'_>>,
+) -> Result<ExtractReport> {
     std::fs::create_dir_all(dest)?;
     let all = list_with_password(archive, password)?;
 
@@ -920,7 +970,10 @@ pub fn extract_entries_with_password(
                 Ok(extracted < total_wanted)
             })
             .map_err(|e| map_7z_error(e, has_pwd))?;
-            Ok(extracted)
+            Ok(ExtractReport {
+                entries: extracted,
+                ..Default::default()
+            })
         }
         Format::Zip => {
             let file = File::open(archive)?;
@@ -946,9 +999,15 @@ pub fn extract_entries_with_password(
                     }
                 }
             }
-            Ok(extracted)
+            Ok(ExtractReport {
+                entries: extracted,
+                ..Default::default()
+            })
         }
-        Format::Gz | Format::Xz | Format::Bz2 | Format::Zst => extract_single(archive, dest, fmt),
+        // Stream formats: one shared best-effort pass (filtered to the wanted names).
+        Format::Gz | Format::Xz | Format::Bz2 | Format::Zst => {
+            extract_stream_core(archive, dest, Some(&wanted), strip_prefix, progress)
+        }
         Format::Rar => {
             let mut extracted = 0usize;
             let mut cursor = unrar::Archive::new(archive)
@@ -985,77 +1044,78 @@ pub fn extract_entries_with_password(
                     Err(e) => return Err(Error::Other(format!("rar: {e}"))),
                 }
             }
-            Ok(extracted)
+            Ok(ExtractReport {
+                entries: extracted,
+                ..Default::default()
+            })
         }
         Format::Unknown => Err(Error::Other("unrecognised archive format".to_string())),
-        _ => {
-            let file = File::open(archive)?;
-            let buf = BufReader::new(file);
-            let reader: Box<dyn Read> = match fmt {
-                Format::TarGz => Box::new(flate2::read::GzDecoder::new(buf)),
-                Format::TarXz => Box::new(xz2::read::XzDecoder::new(buf)),
-                Format::TarBz2 => Box::new(bzip2::read::BzDecoder::new(buf)),
-                Format::TarZst => Box::new(
-                    zstd::stream::read::Decoder::new(buf)
-                        .map_err(|e| Error::Other(e.to_string()))?,
-                ),
-                _ => Box::new(buf),
-            };
-            let mut ar = tar::Archive::new(reader);
-            let mut extracted = 0usize;
-            for item in ar.entries().map_err(|e| Error::Other(e.to_string()))? {
-                let mut item = item.map_err(|e| Error::Other(e.to_string()))?;
-                if item.header().entry_type().is_dir() {
-                    continue;
-                }
-                let p = item
-                    .path()
-                    .map(|p| p.to_string_lossy().replace('\\', "/"))
-                    .unwrap_or_default()
-                    .trim_start_matches("./")
-                    .trim_end_matches('/')
-                    .to_string();
-                if wanted.contains(&p) {
-                    if let Some(out) = map_out_path(&p) {
-                        if let Some(parent) = out.parent() {
-                            std::fs::create_dir_all(parent)?;
-                        }
-                        let mut w = BufWriter::new(File::create(&out)?);
-                        io::copy(&mut item, &mut w)?;
-                        w.flush()?;
-                        extracted += 1;
-                    }
-                }
-            }
-            Ok(extracted)
-        }
+        _ => extract_stream_core(archive, dest, Some(&wanted), strip_prefix, progress),
     }
 }
 
 /// Extract everything in `archive` into `dest`.
-pub fn extract(archive: &Path, dest: &Path) -> Result<usize> {
+// Convenience wrapper for callers that do not need progress or warnings.
+#[allow(dead_code)]
+pub fn extract(archive: &Path, dest: &Path) -> Result<ExtractReport> {
     extract_with_password(archive, dest, None)
 }
 
 /// Extract everything in `archive` into `dest` using an optional password.
+// Convenience wrapper for callers that do not need progress or warnings.
+#[allow(dead_code)]
 pub fn extract_with_password(
     archive: &Path,
     dest: &Path,
     password: Option<&str>,
-) -> Result<usize> {
+) -> Result<ExtractReport> {
+    extract_with_progress(archive, dest, password, None)
+}
+
+/// Extract everything, reporting progress and degrading gracefully on damaged
+/// streams. Stream formats (`.tar.gz`, `.gz`, `.xz`, …) extract as much as the
+/// bytes on disk allow; whatever was written stays on disk.
+pub fn extract_with_progress(
+    archive: &Path,
+    dest: &Path,
+    password: Option<&str>,
+    progress: Option<ProgressSink<'_>>,
+) -> Result<ExtractReport> {
     std::fs::create_dir_all(dest)?;
     let fmt = detect(archive);
     match fmt {
-        Format::SevenZ => extract_7z(archive, dest, password),
-        Format::Zip => extract_zip(archive, dest),
-        Format::Gz | Format::Xz | Format::Bz2 | Format::Zst => extract_single(archive, dest, fmt),
-        Format::Rar => extract_rar(archive, dest),
+        Format::SevenZ => {
+            let n = extract_7z(archive, dest, password, progress)?;
+            Ok(ExtractReport {
+                entries: n,
+                ..Default::default()
+            })
+        }
+        Format::Zip => {
+            let n = extract_zip(archive, dest, progress)?;
+            Ok(ExtractReport {
+                entries: n,
+                ..Default::default()
+            })
+        }
+        Format::Rar => {
+            let n = extract_rar(archive, dest, progress)?;
+            Ok(ExtractReport {
+                entries: n,
+                ..Default::default()
+            })
+        }
         Format::Unknown => Err(Error::Other("unrecognised archive format".to_string())),
-        _ => extract_tar(archive, dest),
+        _ => extract_stream_core(archive, dest, None, "", progress),
     }
 }
 
-fn extract_7z(archive: &Path, dest: &Path, password: Option<&str>) -> Result<usize> {
+fn extract_7z(
+    archive: &Path,
+    dest: &Path,
+    password: Option<&str>,
+    progress: Option<ProgressSink<'_>>,
+) -> Result<usize> {
     let file = File::open(archive)?;
     let has_pwd = password.is_some_and(|p| !p.is_empty());
     let pwd = make_7z_password(password);
@@ -1077,6 +1137,13 @@ fn extract_7z(archive: &Path, dest: &Path, password: Option<&str>) -> Result<usi
             io::copy(reader, &mut w)?;
             w.flush()?;
             count += 1;
+            if let Some(sink) = progress {
+                sink(&Progress {
+                    entries: count,
+                    label: entry.name().to_string(),
+                    ..Default::default()
+                });
+            }
         }
         Ok(true)
     })
@@ -1084,10 +1151,15 @@ fn extract_7z(archive: &Path, dest: &Path, password: Option<&str>) -> Result<usi
     Ok(count)
 }
 
-fn extract_zip(archive: &Path, dest: &Path) -> Result<usize> {
+fn extract_zip(
+    archive: &Path,
+    dest: &Path,
+    progress: Option<ProgressSink<'_>>,
+) -> Result<usize> {
     let file = File::open(archive)?;
     let mut zip = zip::ZipArchive::new(BufReader::new(file))
         .map_err(|e| Error::Other(e.to_string()))?;
+    let total = zip.len();
     let mut count = 0;
     for i in 0..zip.len() {
         let mut f = zip.by_index(i).map_err(|e| Error::Other(e.to_string()))?;
@@ -1106,59 +1178,409 @@ fn extract_zip(archive: &Path, dest: &Path) -> Result<usize> {
         io::copy(&mut f, &mut w)?;
         w.flush()?;
         count += 1;
+        if let Some(sink) = progress {
+            sink(&Progress {
+                entries: count,
+                entries_total: total,
+                label: f
+                    .enclosed_name()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+                ..Default::default()
+            });
+        }
     }
     Ok(count)
 }
 
-fn extract_tar(archive: &Path, dest: &Path) -> Result<usize> {
-    let fmt = detect(archive);
-    let file = File::open(archive)?;
-    let buf = BufReader::new(file);
-    let reader: Box<dyn Read> = match fmt {
-        Format::TarGz => Box::new(flate2::read::GzDecoder::new(buf)),
-        Format::TarXz => Box::new(xz2::read::XzDecoder::new(buf)),
-        Format::TarBz2 => Box::new(bzip2::read::BzDecoder::new(buf)),
-        Format::TarZst => Box::new(
+/// Progress of a streaming pass.
+///
+/// Two ways to measure it, because not every format knows both:
+/// * `total > 0` — bytes of the *source file on disk*; works for every stream
+///   format even when the uncompressed size is unknown (or the file is truncated).
+/// * `entries_total > 0` — entry counts, for archives with a central index
+///   (zip knows its length up front, 7z and rar do not).
+#[derive(Debug, Clone, Default)]
+pub struct Progress {
+    /// Compressed source bytes consumed so far.
+    pub consumed: u64,
+    /// Bytes written to disk so far (uncompressed). The source can be read to
+    /// the end well before decompression is finished.
+    pub written: u64,
+    /// Size of the source file on disk (0 when unknown).
+    pub total: u64,
+    /// Entries finished so far.
+    pub entries: usize,
+    /// Entries the archive declares, when it declares them (0 = unknown).
+    pub entries_total: usize,
+    /// Name currently being written.
+    pub label: String,
+}
+
+/// Callback invoked while work is in flight. Kept `Fn` so it can be shared.
+pub type ProgressSink<'a> = &'a dyn Fn(&Progress);
+
+/// What an extraction actually managed to do.
+///
+/// `stopped` is set when the source ended (or failed) before the archive did.
+/// In that case nothing is deleted: partially written files are listed in
+/// `incomplete`, and a copy of the damaged archive is left next to them so the
+/// user can see exactly which file was bad.
+#[derive(Debug, Default, Clone)]
+pub struct ExtractReport {
+    pub entries: usize,
+    pub bytes: u64,
+    pub incomplete: Vec<String>,
+    pub corrupt_copy: Option<PathBuf>,
+    pub stopped: Option<String>,
+}
+
+impl ExtractReport {
+    pub fn is_partial(&self) -> bool {
+        self.stopped.is_some() || !self.incomplete.is_empty()
+    }
+
+    /// One line for the status bar: what happened, what was kept, why it stopped.
+    pub fn summary(&self) -> String {
+        let plural = |n: usize| if n == 1 { "file" } else { "files" };
+        let kept = self.incomplete.len();
+
+        let mut s = match (self.entries, kept) {
+            (0, 0) => "Nothing extracted".to_string(),
+            (0, _) => format!(
+                "No complete files — {kept} partial {} kept on disk ({})",
+                plural(kept),
+                human(self.bytes)
+            ),
+            (n, 0) if self.bytes > 0 => {
+                format!("Extracted {n} {} ({})", plural(n), human(self.bytes))
+            }
+            (n, 0) => format!("Extracted {n} {}", plural(n)),
+            (n, _) => format!(
+                "Extracted {n} complete {} ({}) — {kept} partial kept on disk: {}",
+                plural(n),
+                human(self.bytes),
+                self.incomplete.join(", ")
+            ),
+        };
+        if let Some(reason) = &self.stopped {
+            s.push_str(&format!(" — stopped early: {reason}"));
+        }
+        if let Some(copy) = &self.corrupt_copy {
+            s.push_str(&format!(" — damaged copy: {}", copy.display()));
+        }
+        s
+    }
+}
+
+/// Bytes consumed so far, plus what the readers know about the current entry.
+#[derive(Default)]
+struct ProgCtx {
+    consumed: u64,
+    written: u64,
+    total: u64,
+    entries: usize,
+    entries_total: usize,
+    label: String,
+}
+
+/// Reader wrapper that counts the bytes pulled from disk and reports progress.
+/// Counting happens at the file level so the number is meaningful even when the
+/// decoder buffers far ahead, and it is throttled so the UI is not flooded.
+struct Tap<'a, R> {
+    inner: R,
+    ctx: Rc<RefCell<ProgCtx>>,
+    sink: Option<ProgressSink<'a>>,
+    last: Instant,
+}
+
+impl<R: Read> Read for Tap<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        if n > 0 {
+            if let Some(sink) = self.sink {
+                let report = {
+                    let mut ctx = self.ctx.borrow_mut();
+                    ctx.consumed += n as u64;
+                    if self.last.elapsed() >= Duration::from_millis(70) {
+                        self.last = Instant::now();
+                        Some(Progress {
+                            consumed: ctx.consumed,
+                            written: ctx.written,
+                            total: ctx.total,
+                            entries: ctx.entries,
+                            entries_total: ctx.entries_total,
+                            label: ctx.label.clone(),
+                        })
+                    } else {
+                        None
+                    }
+                };
+                if let Some(p) = report {
+                    sink(&p);
+                }
+            } else {
+                self.ctx.borrow_mut().consumed += n as u64;
+            }
+        }
+        Ok(n)
+    }
+}
+
+/// Build the decoding reader for a stream format, wired to a progress context.
+fn stream_reader<'a>(
+    path: &Path,
+    fmt: Format,
+    sink: Option<ProgressSink<'a>>,
+) -> Result<(Box<dyn Read + 'a>, Rc<RefCell<ProgCtx>>)> {
+    let total = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let ctx = Rc::new(RefCell::new(ProgCtx {
+        total,
+        ..Default::default()
+    }));
+    let tap = Tap {
+        inner: File::open(path)?,
+        ctx: Rc::clone(&ctx),
+        sink,
+        last: Instant::now(),
+    };
+    let buf = BufReader::with_capacity(256 * 1024, tap);
+    let reader: Box<dyn Read + 'a> = match fmt {
+        Format::Gz | Format::TarGz => Box::new(flate2::read::GzDecoder::new(buf)),
+        Format::Xz | Format::TarXz => Box::new(xz2::read::XzDecoder::new(buf)),
+        Format::Bz2 | Format::TarBz2 => Box::new(bzip2::read::BzDecoder::new(buf)),
+        Format::Zst | Format::TarZst => Box::new(
             zstd::stream::read::Decoder::new(buf).map_err(|e| Error::Other(e.to_string()))?,
         ),
         _ => Box::new(buf),
     };
-    let mut ar = tar::Archive::new(reader);
-    let mut count = 0;
-    for item in ar.entries().map_err(|e| Error::Other(e.to_string()))? {
-        let mut item = item.map_err(|e| Error::Other(e.to_string()))?;
-        if item
-            .path()
-            .map(|p| p.to_string_lossy().starts_with('/'))
-            .unwrap_or(false)
-        {
-            continue; // refuse absolute paths
-        }
-        item.unpack_in(dest)
-            .map_err(|e| Error::Other(e.to_string()))?;
-        count += 1;
-    }
-    Ok(count)
+    Ok((reader, ctx))
 }
 
-fn extract_single(archive: &Path, dest: &Path, fmt: Format) -> Result<usize> {
-    let file = File::open(archive)?;
-    let buf = BufReader::new(file);
-    let mut reader: Box<dyn Read> = match fmt {
-        Format::Gz => Box::new(flate2::read::GzDecoder::new(buf)),
-        Format::Xz => Box::new(xz2::read::XzDecoder::new(buf)),
-        Format::Bz2 => Box::new(bzip2::read::BzDecoder::new(buf)),
-        Format::Zst => Box::new(
-            zstd::stream::read::Decoder::new(buf).map_err(|e| Error::Other(e.to_string()))?,
-        ),
-        _ => return Err(Error::Other("unsupported single-stream format".to_string())),
+/// Copy `r` into `w` in chunks, returning the bytes written and any error.
+///
+/// Unlike `io::copy` this keeps the byte count on failure, which is what lets a
+/// half-written file be reported and kept instead of vanishing.
+fn copy_stream<R: Read, W: Write>(
+    r: &mut R,
+    w: &mut W,
+    ctx: Option<&RefCell<ProgCtx>>,
+    sink: Option<ProgressSink<'_>>,
+) -> (u64, Option<io::Error>) {
+    let mut buf = vec![0u8; 256 * 1024];
+    let mut written = 0u64;
+    let mut last = Instant::now();
+    loop {
+        match r.read(&mut buf) {
+            Ok(0) => return (written, None),
+            Ok(n) => {
+                if let Err(e) = w.write_all(&buf[..n]) {
+                    return (written, Some(e));
+                }
+                written += n as u64;
+                // Tick from the write side too: a 300 MB tar of zeros is 300 KB
+                // on disk, so the source is exhausted almost immediately while
+                // the decompressor keeps working for seconds.
+                let tick = match (ctx, sink) {
+                    (Some(ctx), Some(_)) => {
+                        let mut c = ctx.borrow_mut();
+                        c.written += n as u64;
+                        if last.elapsed() >= Duration::from_millis(90) {
+                            last = Instant::now();
+                            Some(Progress {
+                                consumed: c.consumed,
+                                written: c.written,
+                                total: c.total,
+                                entries: c.entries,
+                                entries_total: c.entries_total,
+                                label: c.label.clone(),
+                            })
+                        } else {
+                            None
+                        }
+                    }
+                    (Some(ctx), None) => {
+                        ctx.borrow_mut().written += n as u64;
+                        None
+                    }
+                    _ => None,
+                };
+                if let (Some(p), Some(sink)) = (tick, sink) {
+                    sink(&p);
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return (written, Some(e)),
+        }
+    }
+}
+
+fn is_stream_tar(fmt: Format) -> bool {
+    matches!(
+        fmt,
+        Format::Tar | Format::TarGz | Format::TarXz | Format::TarBz2 | Format::TarZst
+    )
+}
+
+/// The heart of best-effort extraction: decode, write, keep going.
+///
+/// Nothing is buffered whole and nothing is rolled back. A file is created and
+/// written while the stream is decoded, so an interrupted or truncated source
+/// leaves every complete file in place plus whatever fragment it managed to
+/// write — and a copy of the damaged archive beside them.
+fn extract_stream_core(
+    archive: &Path,
+    dest: &Path,
+    filter: Option<&HashSet<String>>,
+    strip_prefix: &str,
+    progress: Option<ProgressSink<'_>>,
+) -> Result<ExtractReport> {
+    let fmt = detect(archive);
+    std::fs::create_dir_all(dest)?;
+    let (reader, ctx) = stream_reader(archive, fmt, progress)?;
+    let mut report = ExtractReport::default();
+
+    if is_stream_tar(fmt) {
+        let mut ar = tar::Archive::new(reader);
+        let iter = match ar.entries() {
+            Ok(it) => it,
+            Err(e) => {
+                report.stopped = Some(e.to_string());
+                return Ok(report_finish(archive, dest, report));
+            }
+        };
+        for item in iter {
+            let mut item = match item {
+                Ok(i) => i,
+                Err(e) => {
+                    report.stopped = Some(e.to_string());
+                    break;
+                }
+            };
+            let raw = item
+                .path()
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            let name = raw.trim_start_matches("./").trim_end_matches('/').to_string();
+            if name.is_empty() || name.starts_with('/') {
+                continue;
+            }
+            let is_dir = item.header().entry_type().is_dir();
+            if let Some(want) = filter {
+                if !want.contains(&name) {
+                    continue;
+                }
+            }
+            let rel_name = name
+                .strip_prefix(strip_prefix)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(&name);
+            let Some(rel) = sanitize_rel_path(rel_name) else {
+                continue;
+            };
+            let out = dest.join(rel);
+            if is_dir {
+                let _ = std::fs::create_dir_all(&out);
+                continue;
+            }
+            if let Some(parent) = out.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            ctx.borrow_mut().label = name.clone();
+            let mut w = match File::create(&out) {
+                Ok(f) => BufWriter::new(f),
+                Err(e) => {
+                    report.stopped = Some(format!("{}: {e}", out.display()));
+                    break;
+                }
+            };
+            let (written, err) = copy_stream(&mut item, &mut w, Some(&ctx), progress);
+            let flush_err = w.flush().err();
+            report.bytes += written;
+            match err.or(flush_err) {
+                None => {
+                    report.entries += 1;
+                    let mut c = ctx.borrow_mut();
+                    c.entries += 1;
+                    let label = c.label.clone();
+                    let p = Progress {
+                        consumed: c.consumed,
+                        written: c.written,
+                        total: c.total,
+                        entries: c.entries,
+                        entries_total: c.entries_total,
+                        label: label.clone(),
+                    };
+                    drop(c);
+                    if let Some(sink) = progress {
+                        sink(&p);
+                    }
+                }
+                Some(e) => {
+                    // Keep the fragment on disk: the user may still recover data
+                    // from it, and knowing which file broke is the point.
+                    report.incomplete.push(name.clone());
+                    report.stopped = Some(e.to_string());
+                    break;
+                }
+            }
+        }
+    } else {
+        let name = single_inner_name(archive, fmt);
+        let wanted = filter.map(|f| f.contains(&name)).unwrap_or(true);
+        let mut reader = reader;
+        if wanted {
+            let rel_name = name
+                .strip_prefix(strip_prefix)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(&name);
+            let Some(rel) = sanitize_rel_path(rel_name) else {
+                return Err(Error::Other(format!("unusable entry name: {name}")));
+            };
+            let out = dest.join(rel);
+            ctx.borrow_mut().label = name.clone();
+            let mut w = BufWriter::new(File::create(&out)?);
+            let (written, err) = copy_stream(&mut reader, &mut w, Some(&ctx), progress);
+            let flush_err = w.flush().err();
+            report.bytes += written;
+            match err.or(flush_err) {
+                None => {
+                    report.entries = 1;
+                    ctx.borrow_mut().entries = 1;
+                }
+                Some(e) => {
+                    report.incomplete.push(name);
+                    report.stopped = Some(e.to_string());
+                }
+            }
+        }
+    }
+
+    Ok(report_finish(archive, dest, report))
+}
+
+/// Copy the damaged source next to the extracted files so nothing about the
+/// failure is lost, and return the report unchanged otherwise.
+fn report_finish(archive: &Path, dest: &Path, mut report: ExtractReport) -> ExtractReport {
+    if report.stopped.is_none() {
+        return report;
+    }
+    let name = archive
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("archive");
+    let same_dir = match (archive.parent(), dest.canonicalize()) {
+        (Some(p), Ok(d)) => p.canonicalize().map(|c| c == d).unwrap_or(false),
+        _ => false,
     };
-    let stem = single_inner_name(archive, fmt);
-    let out = dest.join(stem);
-    let mut w = BufWriter::new(File::create(&out)?);
-    io::copy(&mut reader, &mut w)?;
-    w.flush()?;
-    Ok(1)
+    if same_dir {
+        return report;
+    }
+    let copy = dest.join(format!("{name}.corrupt"));
+    if std::fs::copy(archive, &copy).is_ok() {
+        report.corrupt_copy = Some(copy);
+    }
+    report
 }
 
 /// Create an archive from a list of source paths using default options.
@@ -1531,7 +1953,11 @@ fn read_entry_single(archive: &Path, fmt: Format) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-fn extract_rar(archive: &Path, dest: &Path) -> Result<usize> {
+fn extract_rar(
+    archive: &Path,
+    dest: &Path,
+    progress: Option<ProgressSink<'_>>,
+) -> Result<usize> {
     let mut count = 0usize;
     let open = unrar::Archive::new(archive)
         .open_for_processing()
@@ -1541,11 +1967,19 @@ fn extract_rar(archive: &Path, dest: &Path) -> Result<usize> {
         match cursor.read_header() {
             Ok(Some(header)) => {
                 let is_dir = header.entry().is_directory();
+                let label = header.entry().filename.to_string_lossy().to_string();
                 let next = header
                     .extract_with_base(dest)
                     .map_err(|e| Error::Other(format!("rar: {e}")))?;
                 if !is_dir {
                     count += 1;
+                    if let Some(sink) = progress {
+                        sink(&Progress {
+                            entries: count,
+                            label,
+                            ..Default::default()
+                        });
+                    }
                 }
                 cursor = next;
             }
@@ -2059,4 +2493,161 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
+    // ---------------------------------------------- best-effort extraction
+
+    /// A tar.gz whose payload does not compress, so cutting the file lands in
+    /// the middle of the stream instead of at a convenient boundary.
+    fn write_targz(path: &Path, entries: &[(&str, Vec<u8>)]) {
+        let f = File::create(path).unwrap();
+        let enc = flate2::write::GzEncoder::new(f, flate2::Compression::fast());
+        let mut b = tar::Builder::new(enc);
+        for (name, data) in entries {
+            let mut h = tar::Header::new_gnu();
+            h.set_size(data.len() as u64);
+            h.set_mode(0o644);
+            h.set_mtime(1_700_000_000);
+            h.set_cksum();
+            b.append_data(&mut h, name, &data[..]).unwrap();
+        }
+        b.into_inner().unwrap().finish().unwrap();
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "choab-zip-test-{tag}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    /// Deterministic, poorly compressible payload.
+    fn noise(len: usize) -> Vec<u8> {
+        let mut v = Vec::with_capacity(len);
+        let mut x: u64 = 0x243f_6a88_85a3_08d3;
+        while v.len() < len {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            v.extend_from_slice(&x.to_le_bytes());
+        }
+        v.truncate(len);
+        v
+    }
+
+    #[test]
+    fn truncated_tar_gz_keeps_what_it_could_decode() {
+        let tmp = scratch("truncated");
+        let src = tmp.join("full.tar.gz");
+        write_targz(
+            &src,
+            &[
+                ("a/first.bin", noise(80_000)),
+                ("a/second.bin", noise(200_000)),
+                ("a/third.bin", noise(200_000)),
+            ],
+        );
+        let bytes = std::fs::read(&src).unwrap();
+        let cut = tmp.join("cut.tar.gz");
+        std::fs::write(&cut, &bytes[..bytes.len() * 5 / 8]).unwrap();
+
+        let out = tmp.join("out");
+        let report = extract_with_progress(&cut, &out, None, None).unwrap();
+
+        // The run reports itself as partial and says why.
+        assert!(report.is_partial(), "expected a partial report");
+        assert!(report.stopped.is_some(), "expected a stop reason");
+
+        // Nothing was thrown away: the first entry is complete on disk.
+        let first = out.join("a/first.bin");
+        assert!(first.is_file(), "first entry should have been kept");
+        assert_eq!(
+            std::fs::read(&first).unwrap(),
+            noise(80_000),
+            "kept file must be byte-exact"
+        );
+
+        // Whatever fragment was written for the entry that broke is kept too.
+        let kept: usize = report
+            .incomplete
+            .iter()
+            .filter(|n| out.join(n).exists())
+            .count();
+        assert_eq!(kept, report.incomplete.len(), "partial files must stay on disk");
+
+        // And the damaged source is copied next to them.
+        let copy = report.corrupt_copy.expect("damaged copy expected");
+        assert!(copy.is_file());
+        assert_eq!(std::fs::metadata(&copy).unwrap().len(), bytes.len() as u64 * 5 / 8);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn intact_tar_gz_reports_no_warning_and_writes_no_copy() {
+        let tmp = scratch("intact");
+        let src = tmp.join("ok.tar.gz");
+        write_targz(&src, &[("d/one.txt", b"one".to_vec()), ("d/two.txt", b"two".to_vec())]);
+
+        let out = tmp.join("out");
+        let report = extract_with_progress(&src, &out, None, None).unwrap();
+        assert!(!report.is_partial());
+        assert_eq!(report.entries, 2);
+        assert!(report.corrupt_copy.is_none());
+        assert_eq!(std::fs::read(out.join("d/two.txt")).unwrap(), b"two");
+        assert!(!out.join("ok.tar.gz.corrupt").exists());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn selected_extraction_honours_strip_prefix() {
+        let tmp = scratch("selected");
+        let src = tmp.join("sel.tar.gz");
+        write_targz(
+            &src,
+            &[
+                ("top/keep/x.txt", b"x".to_vec()),
+                ("top/keep/y.txt", b"y".to_vec()),
+                ("top/skip/z.txt", b"z".to_vec()),
+            ],
+        );
+
+        let out = tmp.join("out");
+        let report = extract_entries_with_password(
+            &src,
+            &["top/keep".to_string()],
+            "top/keep",
+            &out,
+            None,
+        )
+        .unwrap();
+        assert_eq!(report.entries, 2);
+        assert!(out.join("x.txt").is_file());
+        assert!(out.join("y.txt").is_file());
+        assert!(!out.join("z.txt").exists());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn listing_a_truncated_stream_reports_entries_and_a_warning() {
+        let tmp = scratch("listtrunc");
+        let src = tmp.join("list.tar.gz");
+        write_targz(
+            &src,
+            &[("a.bin", noise(120_000)), ("b.bin", noise(120_000))],
+        );
+        let bytes = std::fs::read(&src).unwrap();
+        let cut = tmp.join("cut.tar.gz");
+        std::fs::write(&cut, &bytes[..bytes.len() * 2 / 3]).unwrap();
+
+        let (entries, warning) = list_with_report(&cut, None).unwrap();
+        assert!(!entries.is_empty(), "readable entries should be listed");
+        assert!(warning.is_some(), "a truncated source must warn");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
 }

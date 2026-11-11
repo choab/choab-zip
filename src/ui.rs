@@ -1094,9 +1094,18 @@ impl ChoabZip {
             if self.busy {
                 ui.spinner();
             }
+            // Progress rides along with the status text, so a long pass is
+            // visible instead of the bar looking frozen.
+            let mut text = self.status.clone();
+            if let Some((_, detail)) = self.progress.as_ref().filter(|_| self.busy) {
+                if !detail.is_empty() {
+                    text.push_str("  ·  ");
+                    text.push_str(detail);
+                }
+            }
             let status = elide(
                 ui,
-                &self.status,
+                &text,
                 FontId::proportional(11.5),
                 p.text_muted,
                 ui.available_width() - 240.0,
@@ -1110,6 +1119,29 @@ impl ChoabZip {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
                 ui.add_space(10.0);
+
+                // Thin determinate bar along the bottom edge: greyscale, like
+                // everything else, and it never competes with the text.
+                if let Some((frac, _)) = self.progress.as_ref().filter(|_| self.busy) {
+                    let frac = *frac;
+                    let rect = ui.max_rect();
+                    let track = Rect::from_min_max(
+                        egui::pos2(rect.left(), rect.bottom() - 2.0),
+                        egui::pos2(rect.right(), rect.bottom()),
+                    );
+                    ui.painter().rect_filled(track, 0, p.border);
+                    let width = rect.width() * frac.clamp(0.0, 1.0);
+                    if width > 0.5 {
+                        ui.painter().rect_filled(
+                            Rect::from_min_max(
+                                track.min,
+                                egui::pos2(track.left() + width, track.bottom()),
+                            ),
+                            0,
+                            p.ink,
+                        );
+                    }
+                }
 
                 let pane = match self.focus {
                     Pane::Files => "files",
