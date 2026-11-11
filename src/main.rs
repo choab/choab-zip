@@ -1710,6 +1710,58 @@ const ARCHIVE_EXTS: &[&str] = &[
     ".tbz", ".tbz2", ".zst", ".tzst", ".rar",
 ];
 
+/// Lower-case extension, handling the double-suffixed streams (`tar.gz`).
+fn lower_ext(name: &str) -> String {
+    let lower = name.to_ascii_lowercase();
+    for compound in ["tar.gz", "tar.xz", "tar.bz2", "tar.zst"] {
+        if lower.ends_with(compound) {
+            return compound.to_string();
+        }
+    }
+    lower.rsplit_once('.').map(|(_, e)| e.to_string()).unwrap_or_default()
+}
+
+/// The glyph that says what a file is, at a glance.
+///
+/// Shape carries the family — archive, video, audio, image, document — so the
+/// list reads without opening anything and without relying on colour, which this
+/// interface does not use.
+pub fn file_icon(name: &str, is_dir: bool, is_archive: bool) -> design::Icon {
+    if is_dir {
+        return design::Icon::Folder;
+    }
+    if is_archive || is_archive_name(name) {
+        return design::Icon::Archive;
+    }
+    match lower_ext(name).as_str() {
+        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "svg" | "ico" | "tif" | "tiff" | "avif" => {
+            design::Icon::FileImage
+        }
+        "mp4" | "m4v" | "mkv" | "webm" | "avi" | "mov" | "wmv" | "flv" | "mpg" | "mpeg" | "ts"
+        | "m2ts" | "ogv" | "3gp" => design::Icon::FileVideo,
+        "mp3" | "flac" | "wav" | "ogg" | "oga" | "opus" | "m4a" | "aac" | "wma" | "mid"
+        | "midi" => design::Icon::FileAudio,
+        "pdf" | "doc" | "docx" | "odt" | "rtf" | "txt" | "md" | "epub" | "mobi" | "azw3"
+        | "xls" | "xlsx" | "ods" | "csv" | "ppt" | "pptx" | "odp" | "djvu" => {
+            design::Icon::FileDocument
+        }
+        _ => design::Icon::File,
+    }
+}
+
+/// Short uppercase tag for a file, shown next to the name: `RAR`, `7Z`, `MP4`,
+/// `TAR.GZ`. Unknown or silly extensions get nothing rather than noise.
+pub fn file_tag(name: &str) -> Option<String> {
+    let ext = lower_ext(name);
+    if ext.is_empty() || ext.len() > 6 {
+        return None;
+    }
+    if !ext.chars().all(|c| c.is_ascii_alphanumeric() || c == '.') {
+        return None;
+    }
+    Some(ext.to_ascii_uppercase())
+}
+
 fn is_archive_name(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     ARCHIVE_EXTS.iter().any(|e| lower.ends_with(e))

@@ -481,6 +481,14 @@ pub enum Icon {
     FolderUp,
     Archive,
     File,
+    /// Page with a play mark: video.
+    FileVideo,
+    /// Page with an equalizer: audio.
+    FileAudio,
+    /// Page with a mountain: image.
+    FileImage,
+    /// Page with ruled lines: document / text.
+    FileDocument,
     External,
     Lock,
     Sidebar,
@@ -524,6 +532,18 @@ pub fn paint_icon(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color3
             s,
             egui::StrokeKind::Inside,
         );
+    };
+    // The plain page outline every file-family glyph is built on.
+    let page = || {
+        closed(&[
+            (0.28, 0.12),
+            (0.62, 0.12),
+            (0.77, 0.29),
+            (0.77, 0.88),
+            (0.28, 0.88),
+        ]);
+        line(0.62, 0.12, 0.62, 0.29);
+        line(0.62, 0.29, 0.77, 0.29);
     };
     let arc = |cx: f32, cy: f32, rx: f32, ry: f32, from: f32, to: f32, n: usize| {
         let mut pts = Vec::with_capacity(n + 1);
@@ -723,11 +743,16 @@ pub fn paint_icon(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color3
             poly(&[(0.37, 0.61), (0.5, 0.46), (0.63, 0.61)]);
         }
         Icon::Archive => {
-            rrect(0.15, 0.16, 0.85, 0.88, 0.06);
-            line(0.15, 0.38, 0.85, 0.38);
-            line(0.44, 0.52, 0.56, 0.52);
-            line(0.44, 0.67, 0.56, 0.67);
-            line(0.44, 0.82, 0.56, 0.82);
+            // A box with a zip fastener down the middle: the shape itself says
+            // "archive", so no label is needed to recognise one.
+            rrect(0.14, 0.12, 0.86, 0.88, 0.05);
+            line(0.50, 0.12, 0.50, 0.60);
+            line(0.41, 0.21, 0.59, 0.21);
+            line(0.41, 0.30, 0.59, 0.30);
+            line(0.41, 0.39, 0.59, 0.39);
+            line(0.41, 0.48, 0.59, 0.48);
+            rrect(0.43, 0.57, 0.57, 0.71, 0.03);
+            line(0.50, 0.71, 0.50, 0.82);
         }
         Icon::File => {
             closed(&[
@@ -739,6 +764,28 @@ pub fn paint_icon(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color3
             ]);
             line(0.62, 0.12, 0.62, 0.29);
             line(0.62, 0.29, 0.77, 0.29);
+        }
+
+        Icon::FileVideo => {
+            page();
+            closed(&[(0.40, 0.44), (0.64, 0.57), (0.40, 0.70)]);
+        }
+        Icon::FileAudio => {
+            page();
+            line(0.39, 0.48, 0.39, 0.72);
+            line(0.50, 0.42, 0.50, 0.72);
+            line(0.61, 0.52, 0.61, 0.72);
+        }
+        Icon::FileImage => {
+            page();
+            poly(&[(0.34, 0.74), (0.45, 0.58), (0.53, 0.68), (0.60, 0.60), (0.72, 0.74)]);
+            dot(0.39, 0.44, 0.035);
+        }
+        Icon::FileDocument => {
+            page();
+            line(0.37, 0.46, 0.68, 0.46);
+            line(0.37, 0.57, 0.68, 0.57);
+            line(0.37, 0.68, 0.56, 0.68);
         }
 
         // -------------------------------------------------- extras

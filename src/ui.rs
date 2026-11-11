@@ -462,6 +462,7 @@ impl ChoabZip {
                         Icon::FolderUp,
                         p.text_muted,
                         "..",
+                        None,
                         "",
                         "",
                         "",
@@ -485,12 +486,16 @@ impl ChoabZip {
 
                 for (i, entry) in self.dirs.iter().enumerate() {
                     let sel = self.dir_sel.contains(&i);
-                    let (icon, tint) = if entry.is_dir {
-                        (Icon::Folder, p.ink)
-                    } else if entry.is_archive {
-                        (Icon::Archive, p.ink)
+                    let icon = crate::file_icon(&entry.name, entry.is_dir, entry.is_archive);
+                    let tint = if entry.is_dir || entry.is_archive {
+                        p.ink
                     } else {
-                        (Icon::File, p.text_faint)
+                        p.text_muted
+                    };
+                    let tag = if entry.is_dir {
+                        None
+                    } else {
+                        crate::file_tag(&entry.name)
                     };
                     let size_text = if entry.is_dir {
                         String::new()
@@ -503,6 +508,7 @@ impl ChoabZip {
                         icon,
                         tint,
                         &entry.name,
+                        tag.as_deref(),
                         &size_text,
                         "",
                         &entry.modified,
@@ -753,6 +759,7 @@ impl ChoabZip {
                         Icon::FolderUp,
                         p.text_muted,
                         "..",
+                        None,
                         "",
                         "",
                         "",
@@ -767,10 +774,16 @@ impl ChoabZip {
 
                 for (i, row_item) in rows.iter().enumerate() {
                     let sel = self.arc_sel.contains(&i);
-                    let (icon, tint) = if row_item.is_dir {
-                        (Icon::Folder, p.ink)
+                    let icon = crate::file_icon(&row_item.name, row_item.is_dir, false);
+                    let tint = if row_item.is_dir || icon == Icon::Archive {
+                        p.ink
                     } else {
-                        (Icon::File, p.text_faint)
+                        p.text_muted
+                    };
+                    let tag = if row_item.is_dir {
+                        None
+                    } else {
+                        crate::file_tag(&row_item.name)
                     };
                     let size_text = if row_item.is_dir {
                         String::new()
@@ -788,6 +801,7 @@ impl ChoabZip {
                         icon,
                         tint,
                         &row_item.name,
+                        tag.as_deref(),
                         &size_text,
                         &packed_text,
                         &row_item.modified,
@@ -1575,6 +1589,8 @@ fn list_row(
     icon: Icon,
     icon_tint: Color32,
     name: &str,
+    // Short type tag drawn after the name (`RAR`, `MP4`), if any.
+    tag: Option<&str>,
     size: &str,
     packed: &str,
     date: &str,
@@ -1617,13 +1633,36 @@ fn list_row(
     let cy = rect.center().y;
 
     // Keep both ends of a long name so the extension stays readable.
-    let galley = design::elide_middle(ui, name, name_font, p.text, cols.name_r - cols.name_l);
+    // The type tag sits right after the name and gets its space first, so a
+    // long name is what gets shortened, never the label that identifies it.
     let painter = ui.painter();
+    let tag_galley = tag.map(|t| {
+        painter.layout_no_wrap(t.to_string(), FontId::proportional(9.0), p.text_faint)
+    });
+    let tag_w = tag_galley
+        .as_ref()
+        .map(|g| g.size().x + 7.0)
+        .unwrap_or(0.0);
+    let name_w = (cols.name_r - cols.name_l - tag_w).max(24.0);
+    let galley = design::elide_middle(ui, name, name_font, p.text, name_w);
     painter.galley(
         egui::pos2(cols.name_l, cy - galley.size().y / 2.0),
-        galley,
+        galley.clone(),
         p.text,
     );
+    if let Some(g) = tag_galley {
+        let x = cols.name_l + galley.size().x + 7.0;
+        let hit = egui::Rect::from_min_max(
+            egui::pos2(x - 2.0, cy - 7.0),
+            egui::pos2(x + g.size().x + 2.0, cy + 7.0),
+        );
+        painter.rect_filled(hit, 3, p.row_hover);
+        painter.galley(
+            egui::pos2(x, cy - g.size().y / 2.0),
+            g,
+            p.text_faint,
+        );
+    }
 
     if let Some(r) = cols.size_r {
         if !size.is_empty() {

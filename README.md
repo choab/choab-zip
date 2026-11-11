@@ -66,7 +66,11 @@ in half.
 - The viewer (text, images) docks **below** the content pane, so opening a file
   never squeezes the list.
 - Icons are drawn as vectors on a single weight, so they stay crisp at any
-  scale and never need asset files.
+  scale and never need asset files. Each file family gets its own glyph —
+  archive (box with a zipper), video (page with a play mark), audio (equalizer),
+  image (mountain), document (ruled lines) — and the extension rides along as a
+  faint tag after the name (`RAR`, `7Z`, `MP4`, `TAR.GZ`), so the list says what
+  a file is without relying on colour, which this interface does not use.
 - The palette is strictly greyscale — no hue anywhere, including the accent —
   white by default, with `Ctrl+D` toggling and remembering the choice
   (`theme=system` in `~/.config/choab-zip/prefs.conf` follows the desktop).
