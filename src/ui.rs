@@ -77,7 +77,7 @@ impl ChoabZip {
 
     pub fn toggle_theme(&mut self, ctx: &egui::Context) {
         self.theme = self.theme.flipped();
-        design::save_mode(self.theme);
+        design::Prefs::remember_mode(self.theme);
         design::apply(ctx, &self.palette());
     }
 

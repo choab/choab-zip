@@ -36,7 +36,8 @@ this is.
 | **Multi-Selection & Batch Operations** | Ctrl+Click, Shift+Click, Ctrl+A, batch extract selected, batch delete |
 | **Drag & Drop** | drop archives to open, drop files/folders to create archive or navigate |
 | **Modern Interface** | header bar, flat command bar, places sidebar, vector icons, inspector viewer, centred dialogs |
-| **Theme Switcher** | strictly greyscale; white by default, `Ctrl+D` toggles and the choice is remembered (`theme=system` in `~/.config/choab-zip/prefs.conf` follows the desktop scheme again) |
+| **Remembers where you were** | reopens the last directory, and the theme, from `~/.config/choab-zip/prefs.conf` (`last_dir=…`, `theme=light|dark|system`) |
+| **Theme Switcher** | strictly greyscale; white by default, `Ctrl+D` toggles and the choice is remembered (`theme=system` follows the desktop scheme again) |
 | **Single Content Pane** | the filesystem or the open archive, never squeezed side by side (`Ctrl+W` closes the archive, or the window when nothing is open) |
 | **Keyboard Navigation & Shortcuts** | F5 (Copy), F7 (New Folder), Delete, Backspace, Enter, Ctrl+PgUp/PgDn, Ctrl+A, Ctrl+D, Esc, type-to-find |
 | **Integrity Testing** | native CRC/decompression verification pass |

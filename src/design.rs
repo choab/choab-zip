@@ -240,22 +240,99 @@ pub enum ThemeChoice {
     System,
 }
 
-/// The theme choice saved by a previous run, if any.
-pub fn load_saved_choice() -> Option<ThemeChoice> {
-    let text = std::fs::read_to_string(prefs_file()?).ok()?;
-    for line in text.lines() {
-        if let Some((key, value)) = line.split_once('=') {
-            if key.trim() == "theme" {
-                return match value.trim() {
-                    "light" => Some(ThemeChoice::Light),
-                    "dark" => Some(ThemeChoice::Dark),
-                    "system" => Some(ThemeChoice::System),
-                    _ => None,
-                };
-            }
+/// Everything this app remembers between runs. One small ini-ish file, written
+/// on change; unknown keys are ignored so a hand-edited file stays harmless.
+#[derive(Debug, Default, Clone)]
+pub struct Prefs {
+    /// Theme the user picked, if they ever picked one.
+    pub theme: Option<ThemeChoice>,
+    /// Directory that was open when the app last closed.
+    pub last_dir: Option<std::path::PathBuf>,
+}
+
+impl Prefs {
+    pub fn load() -> Self {
+        match prefs_file().and_then(|p| std::fs::read_to_string(p).ok()) {
+            Some(text) => Self::parse(&text),
+            None => Self::default(),
         }
     }
-    None
+
+    /// Parse the file format. Unknown or malformed lines are ignored, so a
+    /// hand-edited or older file never breaks startup.
+    pub fn parse(text: &str) -> Self {
+        let mut prefs = Self::default();
+        for line in text.lines() {
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            let value = value.trim();
+            match key.trim() {
+                "theme" => {
+                    prefs.theme = match value {
+                        "light" => Some(ThemeChoice::Light),
+                        "dark" => Some(ThemeChoice::Dark),
+                        "system" => Some(ThemeChoice::System),
+                        _ => None,
+                    }
+                }
+                "last_dir" if !value.is_empty() => {
+                    prefs.last_dir = Some(std::path::PathBuf::from(value))
+                }
+                _ => {}
+            }
+        }
+        prefs
+    }
+
+    /// The palette to start with: the saved choice, or white.
+    pub fn mode(&self) -> Mode {
+        self.theme
+            .map(ThemeChoice::mode)
+            .unwrap_or(Mode::Light)
+    }
+
+    pub fn save(&self) {
+        let Some(path) = prefs_file() else {
+            return;
+        };
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let mut out = String::new();
+        if let Some(theme) = self.theme {
+            let value = match theme {
+                ThemeChoice::Light => "light",
+                ThemeChoice::Dark => "dark",
+                ThemeChoice::System => "system",
+            };
+            out.push_str(&format!("theme={value}\n"));
+        }
+        if let Some(dir) = &self.last_dir {
+            out.push_str(&format!("last_dir={}\n", dir.display()));
+        }
+        let _ = std::fs::write(path, out);
+    }
+
+    /// Record the theme the user just chose, keeping everything else.
+    pub fn remember_mode(mode: Mode) {
+        let mut prefs = Self::load();
+        prefs.theme = Some(match mode {
+            Mode::Light => ThemeChoice::Light,
+            Mode::Dark => ThemeChoice::Dark,
+        });
+        prefs.save();
+    }
+
+    /// Record the directory being browsed, keeping everything else.
+    pub fn remember_dir(dir: &std::path::Path) {
+        let mut prefs = Self::load();
+        if prefs.last_dir.as_deref() == Some(dir) {
+            return;
+        }
+        prefs.last_dir = Some(dir.to_path_buf());
+        prefs.save();
+    }
 }
 
 impl ThemeChoice {
@@ -266,21 +343,6 @@ impl ThemeChoice {
             ThemeChoice::System => system_mode(),
         }
     }
-}
-
-/// Remember the theme so `Ctrl+D` survives a restart.
-pub fn save_mode(mode: Mode) {
-    let Some(path) = prefs_file() else {
-        return;
-    };
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    let value = match mode {
-        Mode::Light => "light",
-        Mode::Dark => "dark",
-    };
-    let _ = std::fs::write(path, format!("theme={value}\n"));
 }
 
 // ------------------------------------------------------------- egui style
@@ -1002,4 +1064,36 @@ pub fn elide(
     }
     let cut: String = chars[..lo].iter().collect::<String>() + "…";
     measure(&cut)
+}
+
+#[cfg(test)]
+mod prefs_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn prefs_parse_reads_theme_and_last_dir() {
+        let prefs = Prefs::parse("theme=dark\nlast_dir=/home/aub/Videos\n");
+        assert_eq!(prefs.theme, Some(ThemeChoice::Dark));
+        assert_eq!(prefs.last_dir, Some(PathBuf::from("/home/aub/Videos")));
+
+        let prefs = Prefs::parse("theme=system\n");
+        assert_eq!(prefs.theme, Some(ThemeChoice::System));
+        assert!(prefs.last_dir.is_none());
+    }
+
+    #[test]
+    fn prefs_parse_ignores_junk_and_keeps_partial_files_useful() {
+        let prefs = Prefs::parse(
+            "# comment\nnot a pair\ntheme=nonsense\nlast_dir=\nlast_dir=/tmp/x\n",
+        );
+        assert_eq!(prefs.theme, None);
+        assert_eq!(prefs.last_dir, Some(PathBuf::from("/tmp/x")));
+
+        // An empty file means defaults, not an error.
+        let prefs = Prefs::parse("");
+        assert!(prefs.theme.is_none());
+        assert!(prefs.last_dir.is_none());
+        assert_eq!(prefs.mode(), Mode::Light, "white is the default");
+    }
 }

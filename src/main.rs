@@ -404,18 +404,24 @@ fn report_extract(
 
 impl ChoabZip {
     fn new(cc: &eframe::CreationContext<'_>, start: Option<PathBuf>) -> Self {
-        // White by default; a theme the user picked with Ctrl+D wins and is
-        // remembered across restarts (`theme=system` in prefs.conf follows the
-        // desktop scheme again).
-        let mode = design::load_saved_choice()
-            .map(|c| c.mode())
-            .unwrap_or(design::Mode::Light);
+        // Everything remembered between runs: theme (white unless the user
+        // picked one) and the last directory that was open.
+        let prefs = design::Prefs::load();
+        let mode = prefs.mode();
         design::apply(&cc.egui_ctx, &design::Palette::new(mode));
 
         let (tx, rx) = channel();
-        let mut cwd = std::env::var("HOME")
+        let home = std::env::var("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("/"));
+        // Reopen where the user left off, as long as it still exists and is
+        // reachable (a removable drive may be gone, and the Flatpak only sees
+        // the paths it was granted).
+        let mut cwd = prefs
+            .last_dir
+            .clone()
+            .filter(|d| d.is_dir())
+            .unwrap_or(home);
 
         let mut archive = None;
         let mut start_dir = None;
@@ -433,6 +439,7 @@ impl ChoabZip {
         if let Some(d) = start_dir {
             cwd = d;
         }
+        design::Prefs::remember_dir(&cwd);
 
         let mut me = Self {
             cwd: cwd.clone(),
@@ -570,6 +577,7 @@ impl ChoabZip {
     }
 
     fn enter_dir(&mut self, p: PathBuf) {
+        design::Prefs::remember_dir(&p);
         // The filesystem and the archive share one pane, so browsing the
         // filesystem means leaving the archive behind.
         if self.archive.is_some() {
