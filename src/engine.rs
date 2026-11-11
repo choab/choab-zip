@@ -477,7 +477,7 @@ pub fn list_with_report_progress(
     match fmt {
         Format::SevenZ => Ok((list_7z(path, password)?, None)),
         Format::Zip => Ok((list_zip(path)?, None)),
-        Format::Rar => Ok((list_rar(path)?, None)),
+        Format::Rar => list_rar_report(path),
         Format::Gz | Format::Xz | Format::Bz2 | Format::Zst => {
             Ok((list_single(path, fmt)?, None))
         }
@@ -546,26 +546,492 @@ fn list_single(path: &Path, fmt: Format) -> Result<Vec<Entry>> {
 
 /// RAR is handled by the vendored unRAR C++ code (via the `unrar` crate).
 /// We can list and extract it, but never create it.
-fn list_rar(path: &Path) -> Result<Vec<Entry>> {
-    let listing = unrar::Archive::new(path)
-        .open_for_listing()
-        .map_err(|e| Error::Other(format!("rar: {e}")))?;
 
-    let mut out = Vec::new();
-    for item in listing {
-        let h = item.map_err(|e| Error::Other(format!("rar: {e}")))?;
-        out.push(Entry {
-            path: h.filename.to_string_lossy().replace('\\', "/"),
-            size: h.unpacked_size,
-            packed: 0,
-            is_dir: h.is_directory(),
-            modified: Some(dos_time(h.file_time)),
-            crc: Some(h.file_crc),
-            method: Some("RAR".to_string()),
-            encrypted: h.is_encrypted(),
+// ------------------------------------------------------- multi-volume RAR
+
+/// How a RAR file participates in a multi-volume set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VolStyle {
+    /// `name.part01.rar` … `name.partNN.rar`
+    Part,
+    /// `name.rar` (first volume) then `name.r00`, `name.r01`, …
+    Numeric,
+}
+
+#[derive(Debug, Clone)]
+struct VolName {
+    base: String,
+    style: VolStyle,
+    number: u32,
+    width: usize,
+}
+
+/// Recognise the volume naming schemes RAR actually uses.
+fn parse_vol_name(file_name: &str) -> Option<VolName> {
+    let lower = file_name.to_ascii_lowercase();
+
+    // name.part07.rar
+    if lower.ends_with(".rar") {
+        let stem = &file_name[..file_name.len() - 4];
+        if let Some((head, tail)) = stem.rsplit_once('.') {
+            if let Some(digits) = tail.strip_prefix("part").or_else(|| tail.strip_prefix("PART")) {
+                if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
+                    return Some(VolName {
+                        base: head.to_string(),
+                        style: VolStyle::Part,
+                        number: digits.parse().ok()?,
+                        width: digits.len(),
+                    });
+                }
+            }
+        }
+        // name.rar — the first volume of a numeric set.
+        return Some(VolName {
+            base: stem.to_string(),
+            style: VolStyle::Numeric,
+            number: 0,
+            width: 2,
         });
     }
-    Ok(out)
+
+    // name.r00 … name.r99
+    if lower.len() > 3 {
+        let (stem, ext) = file_name.split_at(file_name.len() - 3);
+        let ext_l = ext.to_ascii_lowercase();
+        if let Some(digits) = ext_l.strip_prefix(".r") {
+            if digits.len() == 2 && digits.bytes().all(|b| b.is_ascii_digit()) {
+                return Some(VolName {
+                    base: stem.to_string(),
+                    style: VolStyle::Numeric,
+                    number: digits.parse::<u32>().ok()? + 1,
+                    width: 2,
+                });
+            }
+        }
+    }
+    None
+}
+
+fn vol_file_name(base: &str, style: VolStyle, number: u32, width: usize) -> String {
+    match style {
+        VolStyle::Part => format!("{base}.part{number:0width$}.rar"),
+        VolStyle::Numeric if number == 0 => format!("{base}.rar"),
+        VolStyle::Numeric => format!("{base}.r{:02}", number - 1),
+    }
+}
+
+/// What a multi-volume RAR looks like on disk right now.
+#[derive(Debug, Clone)]
+pub struct VolumeReport {
+    /// The file the user opened.
+    pub clicked_name: String,
+    /// 1-based volume number of that file.
+    pub clicked: u32,
+    /// Volumes present in the same folder, ascending.
+    pub found: Vec<u32>,
+    /// Gaps between 1 and the highest volume present.
+    pub missing: Vec<u32>,
+    /// Set when the last available volume has no end-of-archive record, so at
+    /// least one further volume exists upstream and is not here.
+    pub continues: bool,
+    /// First volume, when it is one of the files present.
+    pub first: Option<PathBuf>,
+    /// Volume names are `name.partN.rar` (true) or `name.rar`/`name.rNN` (false).
+    pub part_numbered: bool,
+}
+
+impl VolumeReport {
+    /// Is this actually a multi-volume set (as opposed to a plain single-file
+    /// `.rar` that merely looks like one)?
+    pub fn is_set(&self) -> bool {
+        let first_number = if self.part_numbered { 1 } else { 0 };
+        self.clicked != first_number
+            || self.found.len() > 1
+            || !self.missing.is_empty()
+            || self.continues
+    }
+}
+
+impl VolumeReport {
+    /// Facts worth showing in a dialog.
+    pub fn lines(&self) -> Vec<(String, String)> {
+        let nums = |v: &[u32]| {
+            if v.is_empty() {
+                "none".to_string()
+            } else {
+                v.iter()
+                    .map(|n| n.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        };
+        let mut out = vec![
+            ("Archive".to_string(), self.clicked_name.clone()),
+            (
+                "Volume".to_string(),
+                format!("{} of a multi-volume set", self.clicked),
+            ),
+            ("Found here".to_string(), nums(&self.found)),
+        ];
+        let mut missing = self.missing.clone();
+        if self.continues {
+            missing.push(self.found.iter().copied().max().unwrap_or(0) + 1);
+        }
+        if !missing.is_empty() {
+            out.push(("Missing".to_string(), nums(&missing)));
+        }
+        out
+    }
+
+    /// One-line version for the status bar and for `--selftest`.
+    pub fn summary(&self) -> String {
+        let mut s = format!(
+            "{} is volume {} of a multi-volume RAR set",
+            self.clicked_name, self.clicked
+        );
+        s.push_str(&format!(
+            " — parts present: {}",
+            if self.found.is_empty() {
+                "none".to_string()
+            } else {
+                self.found
+                    .iter()
+                    .map(|n| n.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        ));
+        let mut missing = self.missing.clone();
+        if self.continues {
+            missing.push(self.found.iter().copied().max().unwrap_or(0) + 1);
+        }
+        if !missing.is_empty() {
+            s.push_str(&format!(
+                ", missing: {}",
+                missing
+                    .iter()
+                    .map(|n| n.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if self.first.is_none() {
+            s.push_str(
+                " — the first volume is required: file names and the start of every file are in it",
+            );
+        }
+        s
+    }
+}
+
+fn read_vint(buf: &[u8], mut i: usize) -> (u64, usize) {
+    let mut value: u64 = 0;
+    let mut shift = 0;
+    while i < buf.len() {
+        let b = buf[i];
+        i += 1;
+        value |= ((b & 0x7f) as u64) << shift;
+        if b & 0x80 == 0 {
+            break;
+        }
+        shift += 7;
+    }
+    (value, i)
+}
+
+/// Inspect a RAR path and describe its volume set. `None` when the name is not
+/// a volume name at all.
+pub fn rar_volumes(path: &Path) -> Option<VolumeReport> {
+    let name = path.file_name()?.to_str()?.to_string();
+    let me = parse_vol_name(&name)?;
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+
+    let mut found: Vec<u32> = Vec::new();
+    let mut first: Option<PathBuf> = None;
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for entry in rd.flatten() {
+            let Some(other) = entry.file_name().to_str().map(|s| s.to_string()) else {
+                continue;
+            };
+            let Some(vo) = parse_vol_name(&other) else {
+                continue;
+            };
+            if vo.base != me.base || vo.style != me.style {
+                continue;
+            }
+            found.push(vo.number);
+            if vo.number == 0 || (vo.style == VolStyle::Part && vo.number == 1) {
+                first = Some(entry.path());
+            }
+        }
+    }
+    found.sort_unstable();
+    found.dedup();
+
+    // Part-numbered sets start at 1, numeric ones at 0 (`name.rar`).
+    let lowest = if me.style == VolStyle::Part { 1 } else { 0 };
+    let highest = found.iter().copied().max().unwrap_or(me.number);
+    let missing: Vec<u32> = (lowest..=highest).filter(|n| !found.contains(n)).collect();
+
+    // Does the set go on past the last volume we have? The authoritative signal
+    // is the split-after flag on the last file header; failing that, a volume
+    // that does not end with an end-of-archive record also means "truncated set".
+    let continues = found
+        .iter()
+        .copied()
+        .max()
+        .map(|n| dir.join(vol_file_name(&me.base, me.style, n, me.width)))
+        .and_then(|p| scan_rar5_full(&p).ok())
+        .map(|scan| scan.split_after || scan.last_block != Some(5))
+        .unwrap_or(false);
+
+    Some(VolumeReport {
+        clicked_name: name,
+        clicked: me.number,
+        found,
+        missing,
+        continues,
+        first,
+        part_numbered: me.style == VolStyle::Part,
+    })
+}
+
+
+/// Minimal RAR5 block scan: enough to read the file headers of a volume that
+/// `unrar` refuses to open (a later volume of a set, with no part 1 around).
+///
+/// No decoder is involved, so this lists what the volume *declares*; whether the
+/// data can be decoded is another matter, which is why the caller warns.
+pub struct RarScan {
+    pub entries: Vec<Entry>,
+    /// Type of the last block seen (5 = end of archive).
+    pub last_block: Option<u64>,
+    /// The last file header asked to continue in a following volume.
+    pub split_after: bool,
+}
+
+pub fn scan_rar5(path: &Path) -> Result<Vec<Entry>> {
+    Ok(scan_rar5_full(path)?.entries)
+}
+
+pub fn scan_rar5_full(path: &Path) -> Result<RarScan> {
+    const SIG: [u8; 8] = [0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x01, 0x00];
+    let mut f = File::open(path)?;
+    let mut sig = [0u8; 8];
+    f.read_exact(&mut sig)?;
+    if sig != SIG {
+        return Err(Error::Other("not a RAR5 volume".to_string()));
+    }
+
+    let mut out = Vec::new();
+    let mut last_block = None;
+    let mut split_after = false;
+    loop {
+        let mut crc = [0u8; 4];
+        if f.read_exact(&mut crc).is_err() {
+            break; // clean end of file
+        }
+        let Some(hsize) = read_vint_stream(&mut f) else {
+            break;
+        };
+        let mut hdata = vec![0u8; hsize as usize];
+        if f.read_exact(&mut hdata).is_err() {
+            break;
+        }
+
+        let mut i = 0usize;
+        let (htype, ni) = read_vint(&hdata, i);
+        i = ni;
+        let (hflags, ni) = read_vint(&hdata, i);
+        i = ni;
+        if hflags & 0x01 != 0 {
+            let (_, ni) = read_vint(&hdata, i);
+            i = ni;
+        }
+        let mut dsize = 0u64;
+        if hflags & 0x02 != 0 {
+            let (v, ni) = read_vint(&hdata, i);
+            dsize = v;
+            i = ni;
+        }
+
+        if htype == 2 {
+            let mut j = i;
+            let (fflags, nj) = read_vint(&hdata, j);
+            j = nj;
+            let (unpacked, nj) = read_vint(&hdata, j);
+            j = nj;
+            let (_, nj) = read_vint(&hdata, j); // attributes
+            j = nj;
+            let mut mtime = None;
+            if fflags & 0x02 != 0 && j + 4 <= hdata.len() {
+                let secs = u32::from_le_bytes([hdata[j], hdata[j + 1], hdata[j + 2], hdata[j + 3]]);
+                mtime = Some(format_epoch(secs as u64));
+                j += 4;
+            }
+            let mut crc32 = None;
+            if fflags & 0x04 != 0 && j + 4 <= hdata.len() {
+                crc32 = Some(u32::from_le_bytes([
+                    hdata[j],
+                    hdata[j + 1],
+                    hdata[j + 2],
+                    hdata[j + 3],
+                ]));
+                j += 4;
+            }
+            let (_, nj) = read_vint(&hdata, j); // compression info
+            j = nj;
+            let (_, nj) = read_vint(&hdata, j); // host os
+            j = nj;
+            let (nsize, nj) = read_vint(&hdata, j);
+            j = nj;
+            let end = (j + nsize as usize).min(hdata.len());
+            let name = String::from_utf8_lossy(&hdata[j.min(end)..end])
+                .replace('\\', "/")
+                .trim_end_matches('/')
+                .to_string();
+            if name.is_empty() {
+                continue;
+            }
+            let split_before = hflags & 0x08 != 0;
+            split_after = hflags & 0x10 != 0;
+            let marker = match (split_before, split_after) {
+                (true, true) => "RAR · split (continues from an earlier volume and into the next)",
+                (true, false) => "RAR · split (tail of a file from an earlier volume)",
+                (false, true) => "RAR · split (starts here, continues in the next volume)",
+                (false, false) => "RAR",
+            };
+            out.push(Entry {
+                path: name,
+                size: unpacked,
+                packed: dsize,
+                is_dir: fflags & 0x01 != 0,
+                modified: mtime,
+                crc: crc32,
+                method: Some(marker.to_string()),
+                encrypted: false,
+            });
+        }
+
+        if dsize > 0 && f.seek(io::SeekFrom::Current(dsize as i64)).is_err() {
+            break;
+        }
+        last_block = Some(htype);
+        if htype == 5 {
+            break; // end of archive
+        }
+    }
+    Ok(RarScan {
+        entries: out,
+        last_block,
+        split_after,
+    })
+}
+
+/// Read a vint straight from a stream, one byte at a time.
+fn read_vint_stream<R: Read>(r: &mut R) -> Option<u64> {
+    let mut value: u64 = 0;
+    let mut shift = 0;
+    loop {
+        let mut b = [0u8; 1];
+        if r.read_exact(&mut b).is_err() {
+            return None;
+        }
+        value |= ((b[0] & 0x7f) as u64) << shift;
+        if b[0] & 0x80 == 0 {
+            return Some(value);
+        }
+        shift += 7;
+        if shift > 63 {
+            return None;
+        }
+    }
+}
+
+/// Path to hand to `unrar` for this file: the first volume of the set when the
+/// user clicked a later one, so the library can walk the whole chain.
+fn rar_open_target(path: &Path) -> Result<PathBuf> {
+    match rar_volumes(path) {
+        None => Ok(path.to_path_buf()),
+        Some(report) => match &report.first {
+            Some(first) => Ok(first.clone()),
+            None => Err(Error::Other(report.summary())),
+        },
+    }
+}
+
+// Convenience wrapper for callers that do not need the warning.
+#[allow(dead_code)]
+fn list_rar(path: &Path) -> Result<Vec<Entry>> {
+    Ok(list_rar_report(path)?.0)
+}
+
+/// List a RAR, keeping the entries that could be read when the set is
+/// incomplete. A multi-volume set missing a later part still lists everything
+/// declared in the volumes that are present.
+fn list_rar_report(path: &Path) -> Result<(Vec<Entry>, Option<String>)> {
+    let target = match rar_open_target(path) {
+        Ok(t) => t,
+        Err(e) => {
+            // A later volume with no part 1: unrar refuses, but the volume still
+            // declares its files. Show them so the archive opens, and say plainly
+            // that extraction needs the rest of the set.
+            let entries = scan_rar5(path)?;
+            let names = entries.len();
+            return Ok((
+                entries,
+                Some(format!(
+                    "{e} — {names} file(s) declared by this volume; extraction needs the whole set"
+                )),
+            ));
+        }
+    };
+    let listing = unrar::Archive::new(&target)
+        .open_for_listing()
+        .map_err(|e| rar_error(path, e))?;
+
+    let mut out = Vec::new();
+    let mut stopped = None;
+    for item in listing {
+        match item {
+            Ok(h) => out.push(Entry {
+                path: h.filename.to_string_lossy().replace('\\', "/"),
+                size: h.unpacked_size,
+                packed: 0,
+                is_dir: h.is_directory(),
+                modified: Some(dos_time(h.file_time)),
+                crc: Some(h.file_crc),
+                method: Some("RAR".to_string()),
+                encrypted: h.is_encrypted(),
+            }),
+            Err(e) => {
+                let reason = rar_reason(path, &e);
+                if out.is_empty() {
+                    return Err(Error::Other(reason));
+                }
+                stopped = Some(reason);
+                break;
+            }
+        }
+    }
+    Ok((out, stopped))
+}
+
+/// Turn a `unrar` failure into something that names the real problem.
+fn rar_error(path: &Path, e: unrar::error::UnrarError) -> Error {
+    Error::Other(rar_reason(path, &e))
+}
+
+fn rar_reason(path: &Path, e: &unrar::error::UnrarError) -> String {
+    let text = e.to_string();
+    let lower = text.to_lowercase();
+    if lower.contains("volume") {
+        if let Some(report) = rar_volumes(path) {
+            return report.summary();
+        }
+        return format!("rar: {text} — the archive is split across volumes and the set is incomplete");
+    }
+    format!("rar: {text}")
 }
 
 /// RAR stores MS-DOS timestamps. Convert to the same textual form the other
@@ -1099,9 +1565,12 @@ pub fn extract_with_progress(
             })
         }
         Format::Rar => {
-            let n = extract_rar(archive, dest, progress)?;
+            let (n, bytes, stopped, incomplete) = extract_rar(archive, dest, progress)?;
             Ok(ExtractReport {
                 entries: n,
+                bytes,
+                incomplete: incomplete.into_iter().collect(),
+                stopped,
                 ..Default::default()
             })
         }
@@ -1892,6 +2361,12 @@ fn create_single(opts: &CreateOptions, sources: &[PathBuf], target: &Path) -> Re
     Ok(())
 }
 
+/// Where an entry name lands inside `dest`, for callers that need to talk about
+/// the written files (the UI offers to remove the incomplete ones).
+pub fn dest_for_entry(dest: &Path, name: &str) -> Option<PathBuf> {
+    sanitize_rel_path(name.trim_start_matches('/')).map(|clean| dest.join(clean))
+}
+
 pub fn human(n: u64) -> String {
     const U: [&str; 6] = ["B", "K", "M", "G", "T", "P"];
     let mut d = n as f64;
@@ -1953,26 +2428,44 @@ fn read_entry_single(archive: &Path, fmt: Format) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// Extract a RAR, stopping where the data stops.
+///
+/// A multi-volume set with a part missing still yields every file that lives
+/// inside the volumes present: the walk ends at the first read that needs a
+/// missing volume and reports where it stopped. Nothing is removed.
 fn extract_rar(
     archive: &Path,
     dest: &Path,
     progress: Option<ProgressSink<'_>>,
-) -> Result<usize> {
+) -> Result<(usize, u64, Option<String>, Option<String>)> {
     let mut count = 0usize;
-    let open = unrar::Archive::new(archive)
+    let mut bytes = 0u64;
+    let target = rar_open_target(archive)?;
+    let open = unrar::Archive::new(&target)
         .open_for_processing()
-        .map_err(|e| Error::Other(format!("rar: {e}")))?;
+        .map_err(|e| rar_error(archive, e))?;
     let mut cursor = open;
+    let mut current: Option<String> = None;
     loop {
         match cursor.read_header() {
             Ok(Some(header)) => {
                 let is_dir = header.entry().is_directory();
-                let label = header.entry().filename.to_string_lossy().to_string();
-                let next = header
-                    .extract_with_base(dest)
-                    .map_err(|e| Error::Other(format!("rar: {e}")))?;
+                let label = header.entry().filename.to_string_lossy().replace('\\', "/");
+                let header_size_hint = header.entry().unpacked_size;
+                current = Some(label.clone());
+                let next = match header.extract_with_base(dest) {
+                    Ok(next) => next,
+                    Err(e) => {
+                        // The file being written stays on disk, half complete:
+                        // count what actually reached the disk.
+                        bytes += entry_written_bytes(dest, &label, header_size_hint);
+                        let reason = rar_reason(archive, &e);
+                        return Ok((count, bytes, Some(reason), current));
+                    }
+                };
                 if !is_dir {
                     count += 1;
+                    bytes += header_size_hint;
                     if let Some(sink) = progress {
                         sink(&Progress {
                             entries: count,
@@ -1984,17 +2477,32 @@ fn extract_rar(
                 cursor = next;
             }
             Ok(None) => break,
-            Err(e) => return Err(Error::Other(format!("rar: {e}"))),
+            Err(e) => {
+                let reason = rar_reason(archive, &e);
+                return Ok((count, bytes, Some(reason), current));
+            }
         }
     }
-    Ok(count)
+    Ok((count, bytes, None, None))
+}
+
+/// Bytes a partially written entry reached on disk (0 when it never appeared).
+fn entry_written_bytes(dest: &Path, name: &str, fallback: u64) -> u64 {
+    let rel = name.trim_start_matches('/');
+    match sanitize_rel_path(rel) {
+        Some(clean) => std::fs::metadata(dest.join(clean))
+            .map(|m| m.len())
+            .unwrap_or(fallback),
+        None => fallback,
+    }
 }
 
 fn read_entry_rar(archive: &Path, want: &str) -> Result<Vec<u8>> {
     let want_norm = want.trim_end_matches('/');
-    let open = unrar::Archive::new(archive)
+    let target = rar_open_target(archive)?;
+    let open = unrar::Archive::new(&target)
         .open_for_processing()
-        .map_err(|e| Error::Other(format!("rar: {e}")))?;
+        .map_err(|e| rar_error(archive, e))?;
     let mut cursor = open;
     loop {
         match cursor.read_header() {

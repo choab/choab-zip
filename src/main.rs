@@ -69,6 +69,12 @@ enum Msg {
         result: Result<(), String>,
     },
     Done(String, bool),
+    /// An extraction finished; partial runs carry what was kept so the user can
+    /// decide whether to remove it.
+    Extracted {
+        report: Box<engine::ExtractReport>,
+        dest: PathBuf,
+    },
     /// Live progress of a streaming pass (reading or extracting).
     Progress {
         consumed: u64,
@@ -137,6 +143,16 @@ pub struct ChecksumDialog {
     pub sha256: String,
     pub busy: bool,
     pub error: Option<String>,
+}
+
+/// Shown after an extraction that stopped before the end: nothing is deleted
+/// automatically, the user decides.
+pub struct PartialExtractDialog {
+    pub reason: String,
+    pub dest: PathBuf,
+    pub incomplete: Vec<PathBuf>,
+    pub corrupt_copy: Option<PathBuf>,
+    pub extracted: usize,
 }
 
 pub struct NewFolderDialog {
@@ -298,6 +314,7 @@ struct ChoabZip {
 
     /// New folder dialog state
     new_folder_dialog: Option<NewFolderDialog>,
+    partial_extract_dialog: Option<PartialExtractDialog>,
 
     /// Dark / Light theme.
     theme: design::Mode,
@@ -366,20 +383,18 @@ fn report_extract(
 ) {
     match result {
         Ok(report) => {
-            let msg = if report.is_partial() {
-                format!(
-                    "{} — partial output kept in {}",
-                    report.summary(),
-                    dest.display()
-                )
-            } else {
-                report.summary()
-            };
-            let _ = tx.send(Msg::Done(msg, true));
+            let _ = tx.send(Msg::Extracted {
+                report: Box::new(report),
+                dest: dest.to_path_buf(),
+            });
         }
         Err(e) => {
+            // Nothing is cleaned up here either: whatever reached the disk stays.
             let _ = tx.send(Msg::Done(
-                format!("Extract failed: {e} — anything already written was kept in {}", dest.display()),
+                format!(
+                    "Extract failed: {e} — anything already written was kept in {}",
+                    dest.display()
+                ),
                 false,
             ));
         }
@@ -448,6 +463,7 @@ impl ChoabZip {
             password_dialog: None,
             cached_passwords: HashMap::new(),
             new_folder_dialog: None,
+            partial_extract_dialog: None,
             theme: mode,
             places: Place::bookmarks(),
             devices: Place::devices(),
@@ -1188,6 +1204,22 @@ impl ChoabZip {
                         self.status = "Password required".into();
                     } else {
                         self.status = format!("Archive error: {err}");
+                        // A multi-volume set deserves an explanation, not a
+                        // status line elided to nothing.
+                        if let Some(report) = engine::rar_volumes(&path).filter(|r| r.is_set()) {
+                            let mut lines = report.lines();
+                            lines.push((
+                                "Why".to_string(),
+                                "A multi-volume RAR is one file cut into volumes: the names \
+                                 live in volume 1 and the data continues across the others. \
+                                 Only the complete set can be extracted."
+                                    .to_string(),
+                            ));
+                            lines.push(("Status".to_string(), report.summary()));
+                            self.info_title = "Multi-volume archive".to_string();
+                            self.info_lines = lines;
+                            self.show_info = true;
+                        }
                     }
                 }
                 Msg::Preview(r, key) => {
@@ -1311,6 +1343,41 @@ impl ChoabZip {
                     };
                     self.progress = Some((frac, detail));
                     ctx.request_repaint();
+                }
+                Msg::Extracted { report, dest } => {
+                    self.busy = false;
+                    self.progress = None;
+                    self.status = if report.is_partial() {
+                        format!(
+                            "{} — kept in {} (nothing deleted)",
+                            report.summary(),
+                            dest.display()
+                        )
+                    } else {
+                        report.summary()
+                    };
+                    self.refresh_dir();
+                    if let Some(a) = self.archive.clone() {
+                        self.open_archive(a);
+                    }
+                    if report.is_partial() {
+                        let incomplete: Vec<PathBuf> = report
+                            .incomplete
+                            .iter()
+                            .filter_map(|name| engine::dest_for_entry(&dest, name))
+                            .filter(|p| p.exists())
+                            .collect();
+                        self.partial_extract_dialog = Some(PartialExtractDialog {
+                            reason: report
+                                .stopped
+                                .clone()
+                                .unwrap_or_else(|| "the source ended early".to_string()),
+                            dest: dest.clone(),
+                            incomplete,
+                            corrupt_copy: report.corrupt_copy.clone(),
+                            extracted: report.entries,
+                        });
+                    }
                 }
                 Msg::Done(s, ok) => {
                     self.status = s;
@@ -1991,6 +2058,124 @@ impl ChoabZip {
             self.show_info = open && !close_clicked;
         }
 
+        // 2b. Partial extraction: nothing was deleted, the user decides.
+        if let Some(dlg) = self.partial_extract_dialog.take() {
+            let mut open = true;
+            let mut keep = false;
+            let mut remove = false;
+            egui::Window::new("Extraction incomplete")
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .default_width(520.0)
+                .show(ctx, |ui| {
+                    ui.label(format!(
+                        "{} complete file(s) were extracted to:",
+                        dlg.extracted
+                    ));
+                    ui.label(egui::RichText::new(dlg.dest.display().to_string()).small().monospace());
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new("Stopped because:").strong());
+                    ui.label(egui::RichText::new(&dlg.reason).small());
+
+                    if !dlg.incomplete.is_empty() {
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} incomplete file(s) are still on disk:",
+                                dlg.incomplete.len()
+                            ))
+                            .strong(),
+                        );
+                        egui::ScrollArea::vertical()
+                            .id_salt("partial_files_scroll")
+                            .max_height(110.0)
+                            .show(ui, |ui| {
+                                for path in &dlg.incomplete {
+                                    let name = path
+                                        .strip_prefix(&dlg.dest)
+                                        .unwrap_or(path)
+                                        .display()
+                                        .to_string();
+                                    ui.label(egui::RichText::new(name).monospace().small());
+                                }
+                            });
+                    }
+                    if let Some(copy) = &dlg.corrupt_copy {
+                        ui.add_space(6.0);
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "A copy of the damaged archive was saved as:"
+                            ))
+                            .strong(),
+                        );
+                        ui.label(
+                            egui::RichText::new(
+                                copy.file_name()
+                                    .map(|n| n.to_string_lossy().to_string())
+                                    .unwrap_or_else(|| copy.display().to_string()),
+                            )
+                            .monospace()
+                            .small(),
+                        );
+                    }
+
+                    ui.add_space(10.0);
+                    ui.label(
+                        egui::RichText::new("Nothing has been deleted.")
+                            .small()
+                            .color(self.palette().text_faint),
+                    );
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("Keep files").clicked() {
+                            keep = true;
+                        }
+                        let can_remove = !dlg.incomplete.is_empty() || dlg.corrupt_copy.is_some();
+                        if ui
+                            .add_enabled(can_remove, egui::Button::new("Remove incomplete"))
+                            .clicked()
+                        {
+                            remove = true;
+                        }
+                    });
+                });
+
+            if remove {
+                let mut removed = 0usize;
+                for path in &dlg.incomplete {
+                    if std::fs::remove_file(path).is_ok() {
+                        removed += 1;
+                    }
+                }
+                let copy_removed = dlg
+                    .corrupt_copy
+                    .as_ref()
+                    .map(|c| std::fs::remove_file(c).is_ok())
+                    .unwrap_or(false);
+                let mut note = format!("Removed {removed} incomplete file(s)");
+                if copy_removed {
+                    note.push_str(" and the damaged copy");
+                }
+                self.status = note;
+                self.refresh_dir();
+            } else if keep {
+                self.status = format!(
+                    "Kept {} incomplete file(s) in {}",
+                    dlg.incomplete.len(),
+                    dlg.dest.display()
+                );
+            } else if !open {
+                // Closed with the window button: same as keeping.
+                self.status = format!(
+                    "Kept {} incomplete file(s) in {}",
+                    dlg.incomplete.len(),
+                    dlg.dest.display()
+                );
+            }
+        }
+
         // 3. Delete confirmation dialog (single or multiple)
         if !self.delete_targets.is_empty() {
             let mut open = true;
@@ -2302,7 +2487,12 @@ fn main() -> eframe::Result<()> {
                 std::process::exit(1);
             }
         }
-        let _ = std::fs::remove_dir_all(&tmp);
+        // Keep the output for inspection when asked (CHOAB_KEEP_SELFTEST=1).
+        if std::env::var_os("CHOAB_KEEP_SELFTEST").is_some() {
+            println!("kept: {}", tmp.display());
+        } else {
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
         return Ok(());
     }
 

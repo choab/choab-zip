@@ -104,6 +104,27 @@ last volume, so a split set or a truncated `.7z` cannot be recovered this way �
 you get a hard error, exactly like `7z` itself. The same applies to split zip
 (`.z01`, `.z02`, …), which the `zip` crate refuses outright.
 
+### Multi-volume RAR
+
+A RAR set (`name.part1.rar`, `name.part2.rar`, … or `name.rar` + `name.r00`, …)
+is one file cut into volumes, so the parts are useless alone but complete
+together. Any part can be opened:
+
+- **the whole set is there** — clicking *any* volume opens volume 1 and `unrar`
+  walks the chain, so extraction is complete even if you clicked `part7`;
+- **the set is incomplete** — everything that lives entirely inside the volumes
+  you *do* have is extracted, the walk stops at the first read that needs a
+  missing volume, and the half-written file stays on disk;
+- **a later volume on its own** — `unrar` refuses to open it, so the volume's own
+  block headers are parsed instead (no decoder involved) and the files it
+  declares are listed, marked as split, with a warning naming the parts that are
+  present and missing.
+
+Nothing is ever deleted to "clean up" after a partial run. When the report is
+partial the app lists the incomplete files and the saved `.corrupt` copy in a
+dialog, with **Keep files** and **Remove incomplete** — the decision is yours,
+and closing the dialog keeps everything.
+
 ## Build
 
 ```bash
