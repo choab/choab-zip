@@ -61,7 +61,8 @@ enum Msg {
     External {
         key: String,
         name: String,
-        result: Result<(), String>,
+        /// Where the entry was written when it opened successfully.
+        result: Result<PathBuf, String>,
     },
     /// An archive entry was extracted for a fresh choab-zip window.
     NestedArchive {
@@ -481,6 +482,7 @@ impl ChoabZip {
             titlebar_moving: false,
             resizing: false,
         };
+        clean_scratch();
         me.refresh_dir();
         if let Some(a) = archive {
             me.open_path(a);
@@ -906,11 +908,13 @@ impl ChoabZip {
             let display = name.clone();
             let password = self.cached_passwords.get(&arc).cloned();
             std::thread::spawn(move || {
-                let result =
-                    engine::read_entry_with_password(&arc, &entry_path, password.as_deref())
-                        .map_err(|e| e.to_string())
-                        .and_then(|bytes| save_nested_archive(&entry_path, &bytes))
-                        .and_then(|path| spawn_instance(&path));
+                let result = extract_entry_to_scratch(
+                    &arc,
+                    &entry_path,
+                    password.as_deref(),
+                    "nested",
+                )
+                .and_then(|path| spawn_instance(&path));
                 let _ = tx.send(Msg::NestedArchive {
                     name: display,
                     result,
@@ -956,9 +960,15 @@ impl ChoabZip {
             let display = name.clone();
             let password = self.cached_passwords.get(&arc).cloned();
             std::thread::spawn(move || {
-                let result = engine::read_entry_with_password(&arc, &entry_path, password.as_deref())
-                    .map_err(|e| e.to_string())
-                    .and_then(|bytes| open_bytes_externally(&entry_path, &bytes));
+                let result = extract_entry_to_scratch(
+                    &arc,
+                    &entry_path,
+                    password.as_deref(),
+                    "opened",
+                )
+                .and_then(|path| {
+                    system_open(&path).map(|()| path)
+                });
                 let _ = tx.send(Msg::External {
                     key,
                     name: display,
@@ -990,7 +1000,8 @@ impl ChoabZip {
                     let _ = tx.send(Msg::Preview(Ok(text), key_clone));
                 }
                 None => {
-                    let result = open_bytes_externally(&key_clone, &bytes);
+                    let result = extract_entry_to_scratch(&arc, &key_clone, password.as_deref(), "opened")
+                        .and_then(|path| system_open(&path).map(|()| path));
                     let _ = tx.send(Msg::External {
                         key: key_clone,
                         name,
@@ -1304,7 +1315,7 @@ impl ChoabZip {
                         self.preview = None;
                     }
                     self.status = match result {
-                        Ok(()) => format!("Extracted {name} to a temp folder and opened it"),
+                        Ok(path) => format!("Opened {name} — extracted copy at {}", path.display()),
                         Err(e) => format!("Could not open {name}: {e}"),
                     };
                     self.busy = false;
@@ -1733,41 +1744,108 @@ fn is_external_name(name: &str) -> bool {
 /// Spawn the desktop's default handler. No shell, no output redirects: this
 /// runs only when the user explicitly opens a file.
 fn system_open(path: &Path) -> Result<(), String> {
+    // `gio open` goes through the OpenURI portal, which is the only thing that
+    // reaches the *host* desktop from inside a sandbox. `xdg-open` starts, exits
+    // 0 and does nothing there, so it is only a fallback for systems without gio.
+    let flatpak = Path::new("/.flatpak-info").exists();
+    let mut attempts: Vec<(&str, &[&str])> = vec![("gio", &["open"][..])];
+    if !flatpak {
+        attempts.push(("kde-open", &[][..]));
+        attempts.push(("xdg-open", &[][..]));
+    }
     let mut last = String::new();
-    for (prog, args) in [
-        ("xdg-open", &[][..]),
-        ("gio", &["open"][..]),
-        ("kde-open", &[][..]),
-    ] {
-        match std::process::Command::new(prog).args(args).arg(path).spawn() {
-            Ok(_) => return Ok(()),
+    for (prog, args) in attempts {
+        match std::process::Command::new(prog)
+            .args(args)
+            .arg(path)
+            .status()
+        {
+            Ok(status) if status.success() => return Ok(()),
+            Ok(status) => last = format!("{prog}: exit {status}"),
             Err(e) => last = format!("{prog}: {e}"),
         }
     }
-    Err(format!("no system file opener found ({last})"))
+    Err(format!(
+        "no application could be opened for it ({last}); the file is at {}",
+        path.display()
+    ))
 }
 
-/// An archive entry has no path of its own. Write it to a temp copy with its
-/// original file name (so the desktop picks the right app), then open that.
-/// Write an archive entry into a temp folder so another instance can open it.
-fn save_nested_archive(entry_path: &str, bytes: &[u8]) -> Result<PathBuf, String> {
-    let name = Path::new(entry_path)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .filter(|s| !s.is_empty())
-        .unwrap_or("archive");
+/// Root of the scratch space used for archive entries that need a real path.
+///
+/// Deliberately *not* `std::env::temp_dir()`: inside a Flatpak `/tmp` is a
+/// private tmpfs, so anything written there is invisible to host applications
+/// (and to a second instance of this app), which is exactly why "open with the
+/// system app" used to do nothing. `$XDG_CACHE_HOME` lives in the home
+/// directory the sandbox shares, so the desktop can actually read the file.
+fn scratch_root() -> Option<PathBuf> {
+    std::env::var("XDG_CACHE_HOME")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|h| PathBuf::from(h).join(".cache"))
+        })
+        .map(|base| base.join("choab-zip"))
+}
+
+/// A fresh folder inside the scratch space, e.g. `opened/1234-987654321`.
+fn scratch_dir(kind: &str) -> Result<PathBuf, String> {
+    let root = scratch_root().ok_or_else(|| "no cache directory".to_string())?;
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let dir = std::env::temp_dir()
-        .join("choab-zip")
-        .join("nested")
+    let dir = root
+        .join(kind)
         .join(format!("{}-{stamp}", std::process::id()));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let out = dir.join(name);
-    std::fs::write(&out, bytes).map_err(|e| e.to_string())?;
-    Ok(out)
+    Ok(dir)
+}
+
+/// Drop scratch folders older than three days so the cache does not grow
+/// without bound. Silent by design: nothing the user asked for is touched.
+fn clean_scratch() {
+    let Some(root) = scratch_root() else {
+        return;
+    };
+    let cutoff = std::time::SystemTime::now()
+        - std::time::Duration::from_secs(3 * 24 * 60 * 60);
+    for kind in ["opened", "nested"] {
+        let Ok(entries) = std::fs::read_dir(root.join(kind)) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let old = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .map(|m| m < cutoff)
+                .unwrap_or(false);
+            if old {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    }
+}
+
+/// Stream one entry out of an archive into a fresh scratch folder and return
+/// the path of the file, keeping the entry's own name so the desktop picks the
+/// right application for it.
+///
+/// Streams: a 2 GB video is never held in memory, it is copied straight to disk.
+fn extract_entry_to_scratch(
+    archive: &Path,
+    entry_path: &str,
+    password: Option<&str>,
+    kind: &str,
+) -> Result<PathBuf, String> {
+    let dir = scratch_dir(kind)?;
+    engine::extract_entries_with_password(archive, &[entry_path.to_string()], "", &dir, password)
+        .map_err(|e| e.to_string())?;
+    engine::dest_for_entry(&dir, entry_path)
+        .filter(|p| p.is_file())
+        .ok_or_else(|| format!("could not write {} into {}", entry_path, dir.display()))
 }
 
 /// Start another copy of this executable with `path` loaded.
@@ -1780,24 +1858,6 @@ fn spawn_instance(path: &Path) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-fn open_bytes_externally(entry_path: &str, bytes: &[u8]) -> Result<(), String> {
-    let base = Path::new(entry_path)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .filter(|s| !s.is_empty())
-        .unwrap_or("archive-file");
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let dir = std::env::temp_dir()
-        .join("choab-zip")
-        .join(format!("{}-{stamp}", std::process::id()));
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let out = dir.join(base);
-    std::fs::write(&out, bytes).map_err(|e| e.to_string())?;
-    system_open(&out)
-}
 
 fn cmp_names(a: &str, b: &str) -> std::cmp::Ordering {
     a.to_lowercase()

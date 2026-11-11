@@ -77,10 +77,21 @@ in half.
 Archive work stays native: no `7z` subprocess, no external archiver. The
 built-in viewer is reserved for small text files and images (up to 8 MB). When you open
 a PDF, image, video, audio file, office document, or an unknown binary, the
-app asks the desktop to open it (`xdg-open`, with `gio open` / `kde-open` as
-fallbacks). Files inside archives are decoded to a temporary copy first,
-because the desktop needs a real path. Temporary copies live under
-`$TMPDIR/choab-zip/` and are left for the OS to clean up.
+entry is first streamed to a real path in `~/.cache/choab-zip/opened/`, then
+handed to the desktop with `gio open` — which reaches the *host* desktop through
+the OpenURI portal, the only thing that works from inside a Flatpak sandbox
+(`xdg-open` starts, exits 0 and does nothing there). `kde-open` and `xdg-open`
+are the fallbacks on systems without `gio`.
+
+The copy is streamed rather than read into memory first, so a 2 GB video costs
+2 GB of disk, not 2 GB of RAM. Copies older than three days are removed on
+startup, and nested archives are unpacked under `~/.cache/choab-zip/nested/`
+so a second instance can open them.
+
+The cache lives in `$HOME`, not `$TMPDIR`: inside a Flatpak `/tmp` is a private
+tmpfs, so a file written there is invisible to host applications and to other
+instances — which is exactly what used to make "open with the system app" do
+nothing.
 
 ## Damaged and half-downloaded archives
 

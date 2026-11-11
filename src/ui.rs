@@ -1064,12 +1064,13 @@ impl ChoabZip {
                 let tx = self.tx.clone();
                 let password = self.cached_passwords.get(&arc).cloned();
                 std::thread::spawn(move || {
-                    let result =
-                        engine::read_entry_with_password(&arc, &key_for_external, password.as_deref())
-                            .map_err(|e| e.to_string())
-                            .and_then(|bytes| {
-                                crate::open_bytes_externally(&key_for_external, &bytes)
-                            });
+                    let result = crate::extract_entry_to_scratch(
+                        &arc,
+                        &key_for_external,
+                        password.as_deref(),
+                        "opened",
+                    )
+                    .and_then(|path| crate::system_open(&path).map(|()| path));
                     let _ = tx.send(crate::Msg::External {
                         key: key_for_external,
                         name: name_for_external,
