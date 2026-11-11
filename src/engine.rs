@@ -973,17 +973,24 @@ fn list_rar_report(path: &Path) -> Result<(Vec<Entry>, Option<String>)> {
     let target = match rar_open_target(path) {
         Ok(t) => t,
         Err(e) => {
-            // A later volume with no part 1: unrar refuses, but the volume still
-            // declares its files. Show them so the archive opens, and say plainly
-            // that extraction needs the rest of the set.
-            let entries = scan_rar5(path)?;
-            let names = entries.len();
-            return Ok((
-                entries,
-                Some(format!(
-                    "{e} — {names} file(s) declared by this volume; extraction needs the whole set"
-                )),
-            ));
+            // A later volume with no part 1: unrar refuses, but a RAR5 volume
+            // still declares its files in its own headers. Show them so the
+            // archive opens, and say plainly that extraction needs the whole set.
+            // Older RAR volumes cannot be parsed this way, so fall back to the
+            // volume diagnosis rather than a decoder error.
+            match scan_rar5(path) {
+                Ok(entries) => {
+                    let names = entries.len();
+                    return Ok((
+                        entries,
+                        Some(format!(
+                            "{e} — {names} file(s) declared by this volume; \
+                             extraction needs the whole set"
+                        )),
+                    ));
+                }
+                Err(_) => return Err(e),
+            }
         }
     };
     let listing = unrar::Archive::new(&target)
