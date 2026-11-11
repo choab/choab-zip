@@ -739,6 +739,20 @@ fn read_vint(buf: &[u8], mut i: usize) -> (u64, usize) {
     (value, i)
 }
 
+/// True when the file starts with a RAR signature (4.x or 5.x). Used to avoid
+/// explaining volumes for a file that is merely *named* like one.
+pub fn is_rar_file(path: &Path) -> bool {
+    let Ok(mut f) = File::open(path) else {
+        return false;
+    };
+    let mut head = [0u8; 8];
+    if f.read(&mut head).unwrap_or(0) < 7 {
+        return false;
+    }
+    head[..7] == [0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00]
+        || head == [0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x01, 0x00]
+}
+
 /// Inspect a RAR path and describe its volume set. `None` when the name is not
 /// a volume name at all.
 pub fn rar_volumes(path: &Path) -> Option<VolumeReport> {

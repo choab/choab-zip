@@ -403,7 +403,12 @@ fn report_extract(
 
 impl ChoabZip {
     fn new(cc: &eframe::CreationContext<'_>, start: Option<PathBuf>) -> Self {
-        let mode = design::system_mode();
+        // White by default; a theme the user picked with Ctrl+D wins and is
+        // remembered across restarts (`theme=system` in prefs.conf follows the
+        // desktop scheme again).
+        let mode = design::load_saved_choice()
+            .map(|c| c.mode())
+            .unwrap_or(design::Mode::Light);
         design::apply(&cc.egui_ctx, &design::Palette::new(mode));
 
         let (tx, rx) = channel();
@@ -1206,7 +1211,10 @@ impl ChoabZip {
                         self.status = format!("Archive error: {err}");
                         // A multi-volume set deserves an explanation, not a
                         // status line elided to nothing.
-                        if let Some(report) = engine::rar_volumes(&path).filter(|r| r.is_set()) {
+                        if let Some(report) = engine::rar_volumes(&path)
+                            .filter(|r| r.is_set())
+                            .filter(|_| engine::is_rar_file(&path))
+                        {
                             let mut lines = report.lines();
                             lines.push((
                                 "Why".to_string(),
@@ -2035,19 +2043,35 @@ impl ChoabZip {
                 .open(&mut open)
                 .collapsible(false)
                 .resizable(true)
-                .default_size([380.0, 240.0])
+                .default_size([460.0, 260.0])
+                .max_width(720.0)
                 .show(ctx, |ui| {
-                    egui::Grid::new("props_grid")
-                        .num_columns(2)
-                        .spacing([18.0, 6.0])
-                        .striped(true)
-                        .show(ui, |ui| {
-                            for (k, v) in &self.info_lines {
-                                ui.label(egui::RichText::new(k).strong());
-                                ui.label(egui::RichText::new(v).monospace());
-                                ui.end_row();
-                            }
+                    // Fixed key column, value fitted to what is left: a long
+                    // path or archive name keeps its ends instead of widening
+                    // the dialog or running over the next column. The full text
+                    // is one hover away.
+                    const KEY_W: f32 = 108.0;
+                    let p = self.palette();
+                    for (k, v) in &self.info_lines {
+                        ui.horizontal(|ui| {
+                            ui.add_sized(
+                                [KEY_W, 16.0],
+                                egui::Label::new(
+                                    egui::RichText::new(k).strong().size(12.0).color(p.text_muted),
+                                ),
+                            );
+                            let value_max = (ui.available_width() - 8.0).max(120.0);
+                            let galley = design::elide_middle(
+                                ui,
+                                v,
+                                egui::FontId::monospace(12.0),
+                                p.text,
+                                value_max,
+                            );
+                            ui.add(egui::Label::new(galley)).on_hover_text(v.clone());
                         });
+                        ui.add_space(3.0);
+                    }
                     ui.separator();
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button("Close").clicked() {

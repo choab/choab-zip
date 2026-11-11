@@ -36,7 +36,7 @@ this is.
 | **Multi-Selection & Batch Operations** | Ctrl+Click, Shift+Click, Ctrl+A, batch extract selected, batch delete |
 | **Drag & Drop** | drop archives to open, drop files/folders to create archive or navigate |
 | **Modern Interface** | header bar, flat command bar, places sidebar, vector icons, inspector viewer, centred dialogs |
-| **Theme Switcher** | strictly greyscale, follows the Plasma light/dark scheme; manual toggle (`Ctrl+D`) |
+| **Theme Switcher** | strictly greyscale; white by default, `Ctrl+D` toggles and the choice is remembered (`theme=system` in `~/.config/choab-zip/prefs.conf` follows the desktop scheme again) |
 | **Two-Pane Layout** | left filesystem browser, right archive browser (mirrors 7zFM) |
 | **Keyboard Navigation & Shortcuts** | F5 (Copy), F7 (New Folder), Delete, Backspace, Enter, Ctrl+PgUp/PgDn, Ctrl+A, Ctrl+D, Esc, type-to-find |
 | **Integrity Testing** | native CRC/decompression verification pass |

@@ -198,7 +198,8 @@ fn kde_config() -> Option<String> {
 /// deliberately ignored: this app is greyscale by design.
 pub fn system_mode() -> Mode {
     let Some(cfg) = kde_config() else {
-        return Mode::Dark;
+        // No desktop hint: white is the default look.
+        return Mode::Light;
     };
     if let Some(scheme) = ini_value(&cfg, "General", "ColorScheme") {
         if scheme.to_lowercase().contains("dark") {
@@ -215,6 +216,71 @@ pub fn system_mode() -> Mode {
         return Mode::Light;
     }
     Mode::Light
+}
+
+/// Where the one user preference this app has is stored.
+fn prefs_file() -> Option<std::path::PathBuf> {
+    let base = std::env::var("XDG_CONFIG_HOME")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|h| std::path::PathBuf::from(h).join(".config"))
+        })?;
+    Some(base.join("choab-zip").join("prefs.conf"))
+}
+
+/// What the user asked for. `System` is the opt-in way back to following the
+/// desktop scheme; the default (nothing saved) is white.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThemeChoice {
+    Light,
+    Dark,
+    System,
+}
+
+/// The theme choice saved by a previous run, if any.
+pub fn load_saved_choice() -> Option<ThemeChoice> {
+    let text = std::fs::read_to_string(prefs_file()?).ok()?;
+    for line in text.lines() {
+        if let Some((key, value)) = line.split_once('=') {
+            if key.trim() == "theme" {
+                return match value.trim() {
+                    "light" => Some(ThemeChoice::Light),
+                    "dark" => Some(ThemeChoice::Dark),
+                    "system" => Some(ThemeChoice::System),
+                    _ => None,
+                };
+            }
+        }
+    }
+    None
+}
+
+impl ThemeChoice {
+    pub fn mode(self) -> Mode {
+        match self {
+            ThemeChoice::Light => Mode::Light,
+            ThemeChoice::Dark => Mode::Dark,
+            ThemeChoice::System => system_mode(),
+        }
+    }
+}
+
+/// Remember the theme so `Ctrl+D` survives a restart.
+pub fn save_mode(mode: Mode) {
+    let Some(path) = prefs_file() else {
+        return;
+    };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let value = match mode {
+        Mode::Light => "light",
+        Mode::Dark => "dark",
+    };
+    let _ = std::fs::write(path, format!("theme={value}\n"));
 }
 
 // ------------------------------------------------------------- egui style
@@ -837,6 +903,80 @@ pub fn chip_width(ui: &egui::Ui, text: &str) -> f32 {
 }
 
 /// Truncate `text` with an ellipsis so it fits `max_w`.
+/// Keep the *end* of the text, dropping the front: for file names, where the
+/// extension and the distinguishing tail matter more than the prefix.
+pub fn elide_left(
+    ui: &egui::Ui,
+    text: &str,
+    font: FontId,
+    color: Color32,
+    max_w: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let measure = |s: String| ui.painter().layout_no_wrap(s, font.clone(), color);
+    let full = measure(text.to_owned());
+    if full.size().x <= max_w || max_w <= 0.0 {
+        return full;
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let (mut lo, mut hi) = (0usize, chars.len());
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        let trial = "…".to_string() + &chars[chars.len() - mid..].iter().collect::<String>();
+        if measure(trial).size().x <= max_w {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    measure("…".to_string() + &chars[chars.len() - lo..].iter().collect::<String>())
+}
+
+/// Keep both ends and drop the middle. A long path or a long file name stays
+/// recognisable, and nothing is drawn past `max_w`.
+pub fn elide_middle(
+    ui: &egui::Ui,
+    text: &str,
+    font: FontId,
+    color: Color32,
+    max_w: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let measure =
+        |s: String| ui.painter().layout_no_wrap(s, font.clone(), color);
+    let full = measure(text.to_owned());
+    if full.size().x <= max_w || max_w <= 0.0 || text.is_empty() {
+        return full;
+    }
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() < 4 {
+        return elide(ui, text, font, color, max_w);
+    }
+
+    // Estimate how many characters fit, then shrink until it really fits. One
+    // layout per step, and a handful of steps, keeps this cheap per frame.
+    let per_char = (full.size().x / chars.len() as f32).max(1.0);
+    let budget = (max_w / per_char).floor() as usize;
+    let mut keep = budget.saturating_sub(1).min(chars.len());
+    loop {
+        let n = keep.min(chars.len());
+        if n < 4 {
+            return measure("…".to_string());
+        }
+        // Give the tail the larger share: file names end in what identifies them.
+        let head = (n / 3).max(1);
+        let tail = n - head;
+        let trial = format!(
+            "{}…{}",
+            chars[..head].iter().collect::<String>(),
+            chars[chars.len() - tail..].iter().collect::<String>()
+        );
+        let galley = measure(trial);
+        if galley.size().x <= max_w || n < 6 {
+            return galley;
+        }
+        keep = n - 1;
+    }
+}
+
 pub fn elide(
     ui: &egui::Ui,
     text: &str,

@@ -77,6 +77,7 @@ impl ChoabZip {
 
     pub fn toggle_theme(&mut self, ctx: &egui::Context) {
         self.theme = self.theme.flipped();
+        design::save_mode(self.theme);
         design::apply(ctx, &self.palette());
     }
 
@@ -101,11 +102,12 @@ impl ChoabZip {
             if let Some(arc) = self.archive.clone() {
                 let name = arc.file_name().and_then(|s| s.to_str()).unwrap_or("archive");
                 let font = FontId::proportional(12.0);
-                let tw = ui
-                    .painter()
-                    .layout_no_wrap(name.to_owned(), font.clone(), p.text)
-                    .size()
-                    .x;
+                // Reserve the window buttons (laid out right-to-left later) and
+                // the app mark, then fit the name into what is left. Long names
+                // keep their tail — the extension is the useful part.
+                let tab_max = (ui.available_width() - WIN_BTN_W * 3.0 - 30.0 - 42.0).max(70.0);
+                let label = design::elide_left(ui, name, font.clone(), p.text, tab_max);
+                let tw = label.size().x;
                 let (rect, resp) =
                     ui.allocate_exact_size(Vec2::new(tw + 42.0, 26.0), Sense::click());
                 let bg = if resp.hovered() { p.row_hover } else { p.bg_field };
@@ -119,11 +121,9 @@ impl ChoabZip {
                     Icon::Archive,
                     p.ink,
 );
-                ui.painter().text(
-                    egui::pos2(rect.left() + 25.0, rect.center().y),
-                    Align2::LEFT_CENTER,
-                    name,
-                    font,
+                ui.painter().galley(
+                    egui::pos2(rect.left() + 25.0, rect.center().y - label.size().y / 2.0),
+                    label,
                     p.text,
                 );
                 if resp
@@ -1103,7 +1103,7 @@ impl ChoabZip {
                     text.push_str(detail);
                 }
             }
-            let status = elide(
+            let status = design::elide_middle(
                 ui,
                 &text,
                 FontId::proportional(11.5),
@@ -1297,16 +1297,23 @@ fn sidebar_item(ui: &mut egui::Ui, p: &Palette, place: &Place, active: bool) -> 
 }
 
 /// Breadcrumb trail; returns the index of the clicked crumb.
+///
+/// Crumb widths are measured up front, then drawn against a shrinking budget so
+/// a long directory name can never push the trail over its allotted space and
+/// collide with the widgets to its right. A crumb that has to shrink keeps its
+/// tail, which is the part that identifies the folder.
 fn breadcrumbs(
     ui: &mut egui::Ui,
     p: &Palette,
     targets: &[(String, PathBuf)],
     max_w: f32,
 ) -> Option<usize> {
+    if targets.is_empty() {
+        return None;
+    }
     let font = FontId::proportional(12.5);
     let small = FontId::proportional(12.5);
 
-    // Which crumbs fit, counted from the right? Always keep the last one.
     let widths: Vec<f32> = targets
         .iter()
         .map(|(label, _)| {
@@ -1317,13 +1324,16 @@ fn breadcrumbs(
                 + 12.0
         })
         .collect();
-    let mut start = targets.len().saturating_sub(1);
+
+    // Which crumbs fit, counted from the right? Always keep the last one.
+    let mut start = targets.len() - 1;
     let mut used = widths[targets.len() - 1];
     while start > 0 && used + widths[start - 1] + 14.0 <= max_w {
         start -= 1;
         used += widths[start] + 14.0;
     }
 
+    let mut budget = max_w;
     let mut clicked = None;
     if start > 1 {
         let (rect, _) = ui.allocate_exact_size(Vec2::new(18.0, 22.0), Sense::hover());
@@ -1335,33 +1345,47 @@ fn breadcrumbs(
             p.text_faint,
         );
         chevron(ui, p, 8.0);
+        budget -= 26.0;
     }
 
     for (i, (label, _)) in targets.iter().enumerate().skip(start) {
         let last = i + 1 == targets.len();
-        let w = widths[i];
+        let chev_space = if last { 0.0 } else { 10.0 };
+        // Shrink the crumb to what is left instead of overflowing.
+        let w = widths[i].min((budget - chev_space).max(24.0));
+        let galley = design::elide_left(
+            ui,
+            label,
+            if last { font.clone() } else { small.clone() },
+            if last { p.text } else { p.text_muted },
+            (w - 12.0).max(8.0),
+        );
         let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 22.0), Sense::click());
         if resp.hovered() {
             ui.painter().rect_filled(rect, 5, p.row_hover);
         }
-        ui.painter().text(
-            rect.center(),
-            Align2::CENTER_CENTER,
-            label,
-            if last { font.clone() } else { small.clone() },
-            if last { p.text } else { p.text_muted },
+        ui.painter().galley(
+            egui::pos2(rect.center().x - galley.size().x / 2.0, rect.center().y - galley.size().y / 2.0),
+            galley,
+            p.text,
         );
         if resp.clicked() {
             clicked = Some(i);
         }
+        budget -= w;
         if !last {
-            chevron(ui, p, 10.0);
+            chevron(ui, p, chev_space);
+            budget -= chev_space;
         }
     }
     clicked
 }
 
 /// Archive breadcrumb: first crumb is the file name, the rest are inner folders.
+///
+/// The archive file name always stays visible — it is what tells you which
+/// archive you are looking at — and every crumb is clamped to the budget so a
+/// long name can never run over the format chip or the filter box.
 fn archive_crumbs(
     ui: &mut egui::Ui,
     p: &Palette,
@@ -1369,55 +1393,90 @@ fn archive_crumbs(
     max_w: f32,
 ) -> Option<usize> {
     let font = FontId::proportional(12.5);
-    let mut used = 0.0;
-    let mut start = targets.len() - 1;
-    while start > 0 {
-        let w = ui
-            .painter()
-            .layout_no_wrap(targets[start].0.clone(), font.clone(), p.text)
-            .size()
-            .x
-            + 12.0;
-        if used + w > max_w {
-            break;
-        }
-        used += w + 14.0;
-        start -= 1;
-    }
-
-    let mut clicked = None;
-    if start > 1 {
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(18.0, 22.0), Sense::hover());
+    let measure = |ui: &egui::Ui, s: &str| {
         ui.painter()
-            .text(rect.center(), Align2::CENTER_CENTER, "…", font.clone(), p.text_faint);
-        chevron(ui, p, 8.0);
-    }
-
-    for i in start..targets.len() {
-        let last = i + 1 == targets.len();
-        let label = &targets[i].0;
-        let w = ui
-            .painter()
-            .layout_no_wrap(label.clone(), font.clone(), p.text)
+            .layout_no_wrap(s.to_string(), font.clone(), p.text)
             .size()
             .x
-            + 12.0;
+            + 12.0
+    };
+    if targets.is_empty() || max_w < 40.0 {
+        return None;
+    }
+    let n = targets.len();
+    let mut budget = max_w;
+    let mut clicked = None;
+
+    let draw_crumb = |ui: &mut egui::Ui,
+                      clicked: &mut Option<usize>,
+                      i: usize,
+                      w: f32,
+                      budget: &mut f32| {
+        let label = &targets[i].0;
+        let galley = design::elide_left(ui, label, font.clone(), p.text, (w - 12.0).max(8.0));
         let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 22.0), Sense::click());
         if resp.hovered() {
             ui.painter().rect_filled(rect, 5, p.row_hover);
         }
+        ui.painter().galley(
+            egui::pos2(
+                rect.center().x - galley.size().x / 2.0,
+                rect.center().y - galley.size().y / 2.0,
+            ),
+            galley,
+            p.text,
+        );
+        if resp.clicked() {
+            *clicked = Some(i);
+        }
+        *budget -= w;
+    };
+
+    // The archive name itself: capped to less than half the row so the current
+    // folder stays readable next to it.
+    let first_cap = ((max_w * 0.45).max(56.0)).min(max_w - 24.0);
+    let first_w = measure(ui, &targets[0].0).min(first_cap);
+    draw_crumb(ui, &mut clicked, 0, first_w, &mut budget);
+
+    if n == 1 {
+        return clicked;
+    }
+
+    // How many inner crumbs fit after the name?
+    let mut start = n - 1;
+    let mut acc = measure(ui, &targets[n - 1].0);
+    while start > 1 {
+        let w = measure(ui, &targets[start - 1].0) + 10.0;
+        if acc + w + 26.0 > budget {
+            break;
+        }
+        acc += w;
+        start -= 1;
+    }
+
+    chevron(ui, p, 10.0);
+    budget -= 10.0;
+    if start > 1 {
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(18.0, 22.0), Sense::hover());
         ui.painter().text(
             rect.center(),
             Align2::CENTER_CENTER,
-            label,
+            "…",
             font.clone(),
-            if last { p.text } else { p.text_muted },
+            p.text_faint,
         );
-        if resp.clicked() {
-            clicked = Some(i);
-        }
+        chevron(ui, p, 8.0);
+        budget -= 26.0;
+    }
+
+    for i in start..n {
+        let last = i + 1 == n;
+        let chev_space = if last { 0.0 } else { 10.0 };
+        let w = measure(ui, &targets[i].0).min((budget - chev_space).max(24.0));
+        draw_crumb(ui, &mut clicked, i, w, &mut budget);
         if !last {
-            chevron(ui, p, 10.0);
+            chevron(ui, p, chev_space);
+            budget -= chev_space;
         }
     }
     clicked
@@ -1556,7 +1615,8 @@ fn list_row(
     let num_font = FontId::proportional(11.5);
     let cy = rect.center().y;
 
-    let galley = elide(ui, name, name_font, p.text, cols.name_r - cols.name_l);
+    // Keep both ends of a long name so the extension stays readable.
+    let galley = design::elide_middle(ui, name, name_font, p.text, cols.name_r - cols.name_l);
     let painter = ui.painter();
     painter.galley(
         egui::pos2(cols.name_l, cy - galley.size().y / 2.0),
